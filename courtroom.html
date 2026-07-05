@@ -1,0 +1,1855 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>The Court — procedural Beaux-Arts courtroom</title>
+<style>
+  html, body { margin:0; padding:0; height:100%; background:#0a0908; overflow:hidden;
+    font-family: Georgia, 'Times New Roman', serif; }
+  #stage { position:fixed; inset:0; }
+  canvas { display:block; width:100%; height:100%; }
+
+  /* ── loading / bake indicator ─────────────────────────────────────────── */
+  #loader { position:fixed; inset:0; background:#0a0908; display:flex; flex-direction:column;
+    align-items:center; justify-content:center; z-index:30; transition:opacity .9s ease; }
+  #loader.done { opacity:0; pointer-events:none; }
+  #loader h1 { color:#c9b891; font-weight:normal; font-size:15px; letter-spacing:.42em;
+    text-transform:uppercase; margin:0 0 22px; }
+  #loader .bar { width:min(320px, 70vw); height:2px; background:#2a251d; }
+  #loader .bar i { display:block; height:100%; width:0%; background:#c9b891; transition:width .15s linear; }
+  #loader p { color:#6b6152; font-size:11px; letter-spacing:.2em; margin:14px 0 0; text-transform:uppercase; }
+
+  /* ── WebGL2 fallback ──────────────────────────────────────────────────── */
+  #nogl { display:none; position:fixed; inset:0; background:#0a0908; z-index:40;
+    align-items:center; justify-content:center; text-align:center; padding:32px; }
+  #nogl div { max-width:460px; color:#c9b891; }
+  #nogl h1 { font-weight:normal; letter-spacing:.3em; font-size:16px; text-transform:uppercase; }
+  #nogl p { color:#8a7f6c; font-size:13px; line-height:1.7; }
+
+  /* ── demo controls ────────────────────────────────────────────────────── */
+  #ui { position:fixed; left:0; right:0; bottom:0; z-index:20; display:flex; flex-wrap:wrap;
+    gap:8px; align-items:center; justify-content:center; padding:12px 14px 16px;
+    background:linear-gradient(transparent, rgba(8,7,5,.82)); transition:opacity .5s; }
+  #ui.hidden { display:none; }
+  #ui button { font-family:inherit; font-size:11px; letter-spacing:.14em; text-transform:uppercase;
+    color:#d8c9a3; background:rgba(30,26,19,.78); border:1px solid #4a4030; border-radius:3px;
+    padding:10px 12px; cursor:pointer; min-height:40px; }
+  #ui button.active { background:#5a4a2a; color:#f4e9cc; border-color:#8a744a; }
+  #ui button:active { background:#6a5836; }
+  #ui .amp { display:flex; align-items:center; gap:8px; color:#8a7f6c; font-size:10px;
+    letter-spacing:.18em; text-transform:uppercase; }
+  #ui input[type=range] { width:130px; accent-color:#c9a24a; height:28px; }
+  #transcript { position:fixed; left:14px; top:12px; z-index:20; color:#9c8f74; font-size:11px;
+    letter-spacing:.06em; max-width:44vw; opacity:.85; pointer-events:none; font-style:italic; }
+  #transcript.hidden { display:none; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+
+<div id="loader">
+  <h1>The Court</h1>
+  <div class="bar"><i id="loadbar"></i></div>
+  <p id="loadmsg">preparing the room…</p>
+</div>
+
+<div id="nogl"><div>
+  <h1>The Court</h1>
+  <p>This chamber is rendered with WebGL&nbsp;2, which your browser does not provide.
+     Please revisit from a current version of Chrome, Edge, Firefox or Safari.</p>
+</div></div>
+
+<div id="transcript"></div>
+
+<div id="ui">
+  <button data-state="IDLE">Idle</button>
+  <button data-state="RISING">All rise</button>
+  <button data-state="AWAITING">Awaiting</button>
+  <button data-state="COURT_SPEAKING">Court speaking</button>
+  <button data-state="ADJOURNED">Adjourned</button>
+  <span class="amp">amp <input id="amp" type="range" min="0" max="100" value="0"></span>
+  <button id="simulate">Simulate hearing</button>
+</div>
+
+<!-- three.js r185 from CDN — the only external reference in this file -->
+<script type="importmap">
+  { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.185.0/build/three.module.js" } }
+</script>
+
+<script type="module">
+// ═══════════════════════════════════════════════════════════════════════════
+//  A PROCEDURAL BEAUX-ARTS COURTROOM  —  single-file visual spike
+//
+//  Styling is grounded in the James R. Browning U.S. Court of Appeals
+//  Building, San Francisco (1905): white Pavonazzo-type veined marble,
+//  red Numidian-type marble columns, gold-ground mosaic, mahogany joinery,
+//  gilt plaster, tall round-arched fenestration.  No real court's name or
+//  seal appears; the seal reads "THE COURT".
+//
+//  Techniques (reimplemented, not copied, from studying deedy/glacial-valley):
+//   · one shared GLSL noise library, all hero surfaces hand-written shaders
+//   · load-time CPU light bake — here a 3-D light volume (sun shafts, sky
+//     fill, ambient occlusion, fixture glow) DDA-marched through a
+//     voxelised occupancy grid of the room, sampled by every material
+//   · all materials output linear HDR; one post pass does adaptive
+//     exposure → ACES → grade → vignette → film grain → gamma
+//
+//  Determinism: ?pose=STATE&amp=N freezes the injected clock, dust, grain
+//  and easing so screenshots are reproducible.  Demo UI hides under ?pose.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ── WebGL2 gate (three r185 requires WebGL2) ────────────────────────────────
+const glProbe = document.createElement('canvas').getContext('webgl2');
+if (!glProbe) {
+  document.getElementById('nogl').style.display = 'flex';
+  document.getElementById('loader').style.display = 'none';
+  document.getElementById('ui').classList.add('hidden');
+  throw new Error('WebGL2 unavailable');
+}
+
+import * as THREE from 'three';
+
+// ── URL params / determinism ────────────────────────────────────────────────
+const qp = new URLSearchParams(location.search);
+const POSE = qp.get('pose');                       // freeze scene in a state
+const POSE_AMP = Math.min(1, Math.max(0, parseFloat(qp.get('amp') ?? '0.6') || 0));
+const POSE_TIME = 11.35;                           // frozen master clock (s)
+
+// ── deterministic RNG ───────────────────────────────────────────────────────
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// ── injectable clocks ───────────────────────────────────────────────────────
+const RealClock   = () => ({ now: () => performance.now() / 1000 });
+const FrozenClock = (t) => ({ now: () => t });
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  PALETTE — values grounded in the Browning building's documented materials
+//  (photo download was blocked by this build environment's network policy,
+//  so hexes come from documented stone/metal types rather than pixel picks).
+// ═══════════════════════════════════════════════════════════════════════════
+const P = {
+  marbleWhiteA:  0xe9e2d2,  marbleWhiteB: 0xcfc4ac,  marbleVeinGrey: 0x8d8272,
+  marbleRedA:    0x6f2a1e,  marbleRedB:   0x93412c,  marbleRedVein:  0xe3cfae,
+  marbleVerdeA:  0x22332a,  marbleVerdeB: 0x3a5443,  marbleVerdeVein:0x9db89e,
+  mahoganyA:     0x38180e,  mahoganyB:    0x6b3018,  mahoganyC:      0x82452a,
+  oakA:          0x4a3018,  oakB:         0x6e4c28,
+  brassA:        0x6a4c1e,  brassB:       0xc9a24a,  brassHi:        0xf2dc9a,
+  leatherA:      0x3c1512,  leatherB:     0x62241d,
+  plasterA:      0xded2b8,  plasterB:     0xcabfa2,
+  mosaicGoldA:   0xb08a34,  mosaicGoldB:  0xe0bc62,  mosaicBlue:     0x1e3a5c,
+  mosaicGreen:   0x2e5240,  mosaicIvory:  0xe6ddc6,  mosaicOx:       0x6e2a20,
+  carpetA:       0x3c1414,  carpetB:      0x5a2020,
+  paperA:        0xe8e0cd,
+  robeA:         0x141319,
+  sunCol:        [1.00, 0.90, 0.74],   // low warm sun through tall glass
+  winCol:        [0.52, 0.62, 0.82],   // cool sky fill from the fenestration
+  ambCol:        [0.42, 0.35, 0.26],   // warm stone bounce
+  fixCol:        [1.00, 0.70, 0.40],   // incandescent brass fixtures
+};
+const C3 = (hex) => { const c = new THREE.Color(hex); return `vec3(${c.r.toFixed(4)},${c.g.toFixed(4)},${c.b.toFixed(4)})`; };
+
+// ── room dimensions (metres) ────────────────────────────────────────────────
+const ROOM = { x0: -7.2, x1: 7.2, y0: 0, y1: 8.4, z0: -11.5, z1: 11.5 };
+const SUN_TO_SCENE = new THREE.Vector3(0.76, -0.60, -0.12).normalize(); // through the -X windows
+const SUN_DIR = SUN_TO_SCENE.clone().negate();                          // toward the sun
+const WINDOWS = [   // arched openings in the -X wall: [zCenter, width, sillY, springY, archR]
+  { z: -6.4, w: 1.9, sill: 1.5, spring: 4.7, r: 0.95 },
+  { z: -1.9, w: 1.9, sill: 1.5, spring: 4.7, r: 0.95 },
+  { z:  2.6, w: 1.9, sill: 1.5, spring: 4.7, r: 0.95 },
+];
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  SHADERS
+//  Every hero surface is a hand-written GLSL3 material.  They share COMMON:
+//  noise library + the baked 3-D light volume + one physically-flavoured
+//  shade() that outputs linear HDR.  Post does ACES/grain/vignette later.
+// ═══════════════════════════════════════════════════════════════════════════
+const GLSL_COMMON = /* glsl */`
+precision highp float;
+precision highp sampler3D;
+uniform float uTime;
+uniform sampler3D uVol;      // R sun visibility · G ambient occlusion · B fixture · A window fill
+uniform vec3  uVolMin, uVolSize;
+uniform vec3  uSunDir;       // toward the sun
+uniform vec3  uSunCol, uWinCol, uAmbCol, uFixCol;
+uniform float uHouse;        // house (fixture) light level, state-driven
+uniform vec3  uLampPos;  uniform float uLampI;   // bench lamp  (amp-reactive)
+uniform vec3  uLectPos;  uniform float uLectI;   // lectern pool light
+uniform vec3  uCamPos;
+
+float hash12(vec2 p){ vec3 p3 = fract(vec3(p.xyx)*0.1031); p3 += dot(p3, p3.yzx+33.33); return fract((p3.x+p3.y)*p3.z); }
+float hash13(vec3 p){ p = fract(p*0.1031); p += dot(p, p.zyx+31.32); return fract((p.x+p.y)*p.z); }
+vec2  hash22(vec2 p){ vec3 p3 = fract(vec3(p.xyx)*vec3(0.1031,0.1030,0.0973)); p3 += dot(p3,p3.yzx+33.33); return fract((p3.xx+p3.yz)*p3.zy); }
+float vnoise(vec2 p){
+  vec2 i = floor(p), f = fract(p); vec2 u = f*f*(3.0-2.0*f);
+  return mix(mix(hash12(i), hash12(i+vec2(1,0)), u.x),
+             mix(hash12(i+vec2(0,1)), hash12(i+vec2(1,1)), u.x), u.y);
+}
+float vnoise3(vec3 p){
+  vec3 i = floor(p), f = fract(p); vec3 u = f*f*(3.0-2.0*f);
+  return mix(mix(mix(hash13(i), hash13(i+vec3(1,0,0)), u.x),
+                 mix(hash13(i+vec3(0,1,0)), hash13(i+vec3(1,1,0)), u.x), u.y),
+             mix(mix(hash13(i+vec3(0,0,1)), hash13(i+vec3(1,0,1)), u.x),
+                 mix(hash13(i+vec3(0,1,1)), hash13(i+vec3(1,1,1)), u.x), u.y), u.z);
+}
+float fbm(vec2 p){ float a=0.0,w=0.5; for(int i=0;i<4;i++){ a+=w*vnoise(p); p=p*2.03+vec2(17.3,9.1); w*=0.5; } return a; }
+float fbm3(vec3 p){ float a=0.0,w=0.5; for(int i=0;i<4;i++){ a+=w*vnoise3(p); p=p*2.03+vec3(13.7,5.1,7.9); w*=0.5; } return a; }
+float ridge(vec2 p){ return 1.0 - abs(2.0*fbm(p) - 1.0); }
+vec2 vorF(vec2 p){                     // F1 distance + cell id hash
+  vec2 i = floor(p), f = fract(p); float md = 8.0; float id = 0.0;
+  for (int y=-1;y<=1;y++) for (int x=-1;x<=1;x++){
+    vec2 g = vec2(float(x),float(y)); vec2 o = hash22(i+g);
+    vec2 r = g + o - f; float d = dot(r,r);
+    if (d < md){ md = d; id = hash12(i+g+7.0); }
+  }
+  return vec2(sqrt(md), id);
+}
+float vorEdge(vec2 p){
+  vec2 i = floor(p), f = fract(p); float f1 = 8.0, f2 = 8.0;
+  for (int y=-1;y<=1;y++) for (int x=-1;x<=1;x++){
+    vec2 g = vec2(float(x),float(y));
+    vec2 r = g + hash22(i+g) - f; float d = dot(r,r);
+    if (d < f1){ f2 = f1; f1 = d; } else if (d < f2){ f2 = d; }
+  }
+  return sqrt(f2) - sqrt(f1);
+}
+
+vec4 bakeAt(vec3 wp, vec3 N){
+  vec3 sp = (wp + N*0.30 - uVolMin) / uVolSize;
+  return texture(uVol, clamp(sp, vec3(0.02), vec3(0.98)));
+}
+// blinn-phong lobe, energy-ish normalised
+float lobe(vec3 N, vec3 L, vec3 V, float rough){
+  vec3 h = normalize(L + V);
+  float p = exp2(9.0*(1.0 - rough) + 1.0);
+  return pow(max(dot(N,h),0.0), p) * (p + 8.0) * 0.045;
+}
+vec3 dynLight(vec3 alb, vec3 N, vec3 wp, vec3 V, float specA, float rough, vec3 lp, vec3 lc, float li){
+  if (li < 0.004) return vec3(0.0);
+  vec3 ld = lp - wp; float d2 = dot(ld,ld); ld *= inversesqrt(max(d2,1e-4));
+  float att = li / (1.0 + d2*0.9);
+  float ndl = max(dot(N, ld), 0.0);
+  return alb*lc*att*ndl + lc*att*ndl*specA*lobe(N, ld, V, rough);
+}
+vec3 shade(vec3 alb, vec3 N, vec3 wp, float specA, float rough, float aoL){
+  vec3 V = normalize(uCamPos - wp);
+  vec4 bk = bakeAt(wp, N);
+  float sunV = bk.r, ao = bk.g, fixV = bk.b, winV = bk.a;
+  vec3 winDir = normalize(vec3(-1.0, 0.35, 0.0));       // toward the fenestration wall
+  vec3 col = alb * uSunCol * 5.2 * sunV * max(dot(N, uSunDir), 0.0);
+  col += alb * uWinCol * 1.35 * winV * (max(dot(N, winDir), 0.0)*0.75 + 0.25);
+  col += alb * uAmbCol * 1.15 * ao * (0.62 + 0.38*clamp(N.y*0.5+0.5, 0.0, 1.0));
+  col += alb * uFixCol * 1.9 * fixV * uHouse;
+  // speculars: sun + window sheen + fixtures-as-glints
+  float fres = 0.05 + 0.95*pow(1.0 - max(dot(N, V), 0.0), 5.0);
+  col += uSunCol * 5.2 * sunV * max(dot(N,uSunDir),0.0) * specA * fres * lobe(N, uSunDir, V, rough);
+  col += uWinCol * 1.35 * winV * specA * fres * lobe(N, winDir, V, min(rough+0.18,1.0)) * 0.6;
+  col += uFixCol * 1.9 * fixV * uHouse * specA * fres * lobe(N, normalize(vec3(0.2,1.0,0.1)), V, min(rough+0.25,1.0)) * 0.5;
+  col += dynLight(alb, N, wp, V, specA, rough, uLampPos, vec3(1.0,0.58,0.24), uLampI*2.6);
+  col += dynLight(alb, N, wp, V, specA, rough, uLectPos, vec3(1.0,0.84,0.58), uLectI*2.0);
+  col *= aoL;
+  // subtle interior depth haze, warm-dark
+  float d = length(wp - uCamPos);
+  col = mix(col, vec3(0.045,0.038,0.030)*(0.4+uHouse), 1.0 - exp(-d*d*0.00042));
+  return col;
+}
+`;
+
+const VERT_STD = /* glsl */`
+out vec3 vWp; out vec3 vN; out vec2 vUv; out vec4 vData;
+in vec4 aData;
+void main(){
+  vWp = (modelMatrix * vec4(position,1.0)).xyz;
+  vN  = normalize(mat3(modelMatrix) * normal);
+  vUv = uv; vData = aData;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0);
+}
+`;
+
+// ── veined marble: fbm-warped ridged veins, per-pixel, three stone variants ──
+const FRAG_MARBLE = /* glsl */`
+${'${COMMON}'}
+in vec3 vWp; in vec3 vN; in vec2 vUv; in vec4 vData;
+out vec4 outColor;
+void main(){
+  vec3 N = normalize(vN);
+  float variant = vData.y; float seed = vData.x;
+  vec3 q = vWp * 1.35 + seed*19.0;
+  // vein network: two warped ridged layers, sharpened
+  vec2 pp = q.xz*0.9 + vec2(q.y*0.55, q.y*0.31);
+  vec2 warp = vec2(fbm(pp*0.9 + 3.7), fbm(pp*0.9 + 9.2));
+  float v1 = pow(clamp(ridge(pp*0.75 + warp*1.35), 0.0, 1.0), 9.0);
+  float v2 = pow(clamp(ridge(pp*2.3 - warp*0.9 + 4.1), 0.0, 1.0), 14.0);
+  float cloud = fbm(pp*0.45 + warp*0.5);
+  vec3 base, veinC;
+  float polish;
+  if (variant < 0.5) {           // white Pavonazzo-type — walls, floor field
+    base  = mix(${C3(P.marbleWhiteA)}, ${C3(P.marbleWhiteB)}, cloud);
+    base *= 0.94 + 0.06*fbm(pp*6.0);
+    veinC = ${C3(P.marbleVeinGrey)};
+    base  = mix(base, veinC, v1*0.75 + v2*0.35);
+    base  = mix(base, ${C3(0xb9a273)}, smoothstep(0.62,0.85,cloud)*0.22);   // warm sienna drift
+    polish = 0.55;
+  } else if (variant < 1.5) {    // red Numidian-type — columns, dais accents
+    base  = mix(${C3(P.marbleRedA)}, ${C3(P.marbleRedB)}, cloud);
+    base *= 0.90 + 0.10*fbm(pp*5.0 + 2.0);
+    veinC = ${C3(P.marbleRedVein)};
+    base  = mix(base, veinC, v1*0.55 + v2*0.30);
+    base  = mix(base, ${C3(0x3a120c)}, smoothstep(0.6,0.9,fbm(pp*1.7+8.0))*0.4);
+    polish = 0.85;
+  } else {                       // verde antique — floor border bands
+    base  = mix(${C3(P.marbleVerdeA)}, ${C3(P.marbleVerdeB)}, cloud);
+    veinC = ${C3(P.marbleVerdeVein)};
+    base  = mix(base, veinC, v1*0.6 + v2*0.4);
+    polish = 0.8;
+  }
+  // micro normal shimmer so polish reads as stone, not plastic
+  float mn = vnoise3(q*22.0);
+  vec3 Np = normalize(N + (mn-0.5)*0.05);
+  // panel-edge wear: soften ao at authored uv borders
+  float edge = min(min(vUv.x, 1.0-vUv.x), min(vUv.y, 1.0-vUv.y));
+  float aoL = 0.82 + 0.18*smoothstep(0.0, 0.06, edge);
+  vec3 col = shade(base, Np, vWp, polish, mix(0.34, 0.16, polish), aoL);
+  outColor = vec4(col, 1.0);
+}
+`;
+
+// ── wood grain: warped growth rings + fibre, mahogany/oak variants ──────────
+const FRAG_WOOD = /* glsl */`
+${'${COMMON}'}
+in vec3 vWp; in vec3 vN; in vec2 vUv; in vec4 vData;
+out vec4 outColor;
+void main(){
+  vec3 N = normalize(vN);
+  float seed = vData.x, variant = vData.y;
+  // grain flows along the piece's authored u direction; seed offsets the log
+  vec2 gp = vec2(vUv.x*7.0 + seed*11.0, vUv.y*1.15 + seed*5.0);
+  float wob = fbm(gp*1.6);
+  float rings = 0.5 + 0.5*sin(gp.y*46.0 + wob*9.5 + seed*40.0);
+  rings = pow(rings, 1.6);
+  float fibre = vnoise(vec2(gp.x*3.0, gp.y*160.0));
+  float pore  = smoothstep(0.72, 0.95, vnoise(vec2(gp.x*14.0, gp.y*240.0)));
+  vec3 base;
+  float gloss;
+  if (variant < 0.5) {          // french-polished mahogany — bench, panelling
+    base = mix(${C3(P.mahoganyA)}, ${C3(P.mahoganyB)}, rings);
+    base = mix(base, ${C3(P.mahoganyC)}, smoothstep(0.55,0.95,fibre)*0.35);
+    base *= 0.9 + 0.2*wob;
+    base *= 1.0 - pore*0.28;
+    gloss = 0.85;
+  } else {                      // waxed oak — pews, floor trims
+    base = mix(${C3(P.oakA)}, ${C3(P.oakB)}, rings);
+    base *= 0.88 + 0.24*fibre;
+    base *= 1.0 - pore*0.2;
+    gloss = 0.45;
+  }
+  // carved profile shadow via authored v: darken toward panel edges
+  float edge = min(vUv.y, 1.0 - vUv.y);
+  float aoL = 0.78 + 0.22*smoothstep(0.0, 0.10, edge);
+  float mn = vnoise3(vWp*30.0 + seed);
+  vec3 Np = normalize(N + (mn - 0.5)*0.04);
+  vec3 col = shade(base, Np, vWp, gloss, mix(0.42, 0.13, gloss), aoL);
+  outColor = vec4(col, 1.0);
+}
+`;
+
+// ── mosaic: gold-ground tesserae with grout, lunette figure + floor border ──
+const FRAG_MOSAIC = /* glsl */`
+${'${COMMON}'}
+in vec3 vWp; in vec3 vN; in vec2 vUv; in vec4 vData;
+out vec4 outColor;
+void main(){
+  vec3 N = normalize(vN);
+  float variant = vData.y;
+  // uv in centimetre-ish tesserae space
+  vec2 tp = vUv * vData.zw;              // zw carries the tile density per piece
+  vec2 vf = vorF(tp);
+  float grout = smoothstep(0.02, 0.14, vorEdge(tp));
+  float id = vf.y;
+  vec3 tess;
+  if (variant < 0.5) {
+    // ── lunette: gold ground, laurel arcs, blue border bands ──
+    vec2 c = vUv - vec2(0.5, 0.0);
+    float rr = length(c*vec2(1.0, 1.0));
+    vec3 gold = mix(${C3(P.mosaicGoldA)}, ${C3(P.mosaicGoldB)}, id);
+    // each gold leaf tessera catches light on its own facet angle
+    float facet = 0.75 + 0.55*hash12(vec2(id*91.0, id*57.0));
+    gold *= facet;
+    tess = gold;
+    float band = smoothstep(0.475, 0.465, rr) - smoothstep(0.43, 0.42, rr);
+    tess = mix(tess, mix(${C3(P.mosaicBlue)}, ${C3(0x2e5478)}, id), band);
+    float band2 = smoothstep(0.415, 0.405, rr) - smoothstep(0.395, 0.385, rr);
+    tess = mix(tess, mix(${C3(P.mosaicOx)}, ${C3(0x8a3a28)}, id), band2);
+    // laurel garland: leaf lobes along an arc
+    float ang = atan(c.y, c.x);
+    float arcR = 0.30;
+    float leaf = smoothstep(0.030, 0.008, abs(rr - (arcR + 0.028*sin(ang*34.0))));
+    leaf *= step(0.12, ang) * step(ang, 3.02);
+    tess = mix(tess, mix(${C3(P.mosaicGreen)}, ${C3(0x49795c)}, id), leaf);
+    // radiating glory lines behind
+    float ray = smoothstep(0.65, 0.95, sin(ang*22.0)*0.5+0.5) * smoothstep(0.40, 0.18, rr) * (1.0-leaf);
+    tess = mix(tess, ${C3(P.mosaicIvory)}, ray*0.35);
+  } else {
+    // ── floor border: ivory field, guilloche of verde/oxblood, gold studs ──
+    float lane = vUv.y;                 // 0..1 across the band
+    vec3 ivory = mix(${C3(P.mosaicIvory)}, ${C3(0xcfc3a6)}, id);
+    tess = ivory;
+    float wave = sin(vUv.x*vData.z*0.42 + sin(lane*6.28)*0.8);
+    float g1 = smoothstep(0.30, 0.20, abs(lane - 0.5 - 0.17*wave));
+    tess = mix(tess, mix(${C3(P.mosaicGreen)}, ${C3(0x3d6a50)}, id), g1);
+    float g2 = smoothstep(0.10, 0.045, abs(lane - 0.5 + 0.17*wave));
+    tess = mix(tess, mix(${C3(P.mosaicOx)}, ${C3(0x84382a)}, id), g2);
+    float stud = step(0.87, sin(vUv.x*vData.z*0.42)*0.5+0.5) * smoothstep(0.10, 0.02, abs(lane-0.5));
+    tess = mix(tess, mix(${C3(P.mosaicGoldA)}, ${C3(P.mosaicGoldB)}, id), stud);
+    float rim = smoothstep(0.05,0.02,lane) + smoothstep(0.95,0.98,lane);
+    tess = mix(tess, ${C3(P.mosaicBlue)}, rim*0.8);
+  }
+  tess *= 0.55 + 0.45*grout;                                 // grout shadow
+  vec3 groutC = ${C3(0x8d8272)} * 0.55;
+  vec3 alb = mix(groutC, tess, grout);
+  // tesserae facets: perturb normal per cell for glittering gold
+  vec2 fh = hash22(vec2(id*127.0, id*311.0)) - 0.5;
+  vec3 Np = normalize(N + vec3(fh.x, fh.y, fh.x)*0.16*grout);
+  float spec = (variant < 0.5 ? 0.85 : 0.5) * grout;
+  vec3 col = shade(alb, Np, vWp, spec, 0.22, 1.0);
+  outColor = vec4(col, 1.0);
+}
+`;
+
+// ── aged brass / gilt: patina in crevices, strong warm fresnel ──────────────
+const FRAG_BRASS = /* glsl */`
+${'${COMMON}'}
+uniform sampler2D uSealTex;
+in vec3 vWp; in vec3 vN; in vec2 vUv; in vec4 vData;
+out vec4 outColor;
+void main(){
+  vec3 N = normalize(vN);
+  float seed = vData.x, isSeal = vData.y;
+  vec3 q = vWp*7.0 + seed;
+  float pat = fbm3(q*0.9);
+  float tarn = smoothstep(0.42, 0.85, fbm3(q*2.1 + 4.0));
+  vec3 base = mix(${C3(P.brassB)}, ${C3(P.brassA)}, tarn*0.8);
+  base = mix(base, ${C3(0x3e2c12)}, smoothstep(0.65,0.95,pat)*0.35);
+  float engrave = 0.0;
+  if (isSeal > 0.5) {
+    // scales of justice in relief + ring text "THE COURT" from the mask
+    vec2 c = vUv - 0.5;
+    float r = length(c);
+    float ring = smoothstep(0.012,0.004,abs(r-0.46)) + smoothstep(0.010,0.003,abs(r-0.335));
+    float mask = texture(uSealTex, vUv).r;              // letters, generated in-file
+    // beam
+    float beam = smoothstep(0.012,0.004, abs(c.y-0.10)) * step(abs(c.x), 0.21);
+    // column + plinth
+    float col_ = smoothstep(0.016,0.006, abs(c.x)) * step(-0.20, c.y) * step(c.y, 0.115);
+    float plinth = smoothstep(0.02,0.008, abs(c.y+0.215)) * step(abs(c.x), 0.10);
+    // chains
+    float ch1 = smoothstep(0.008,0.002, abs(length(c-vec2(-0.21,0.10))*0.0 + abs((c.x+0.21)*0.9) + max(0.0,(0.10-c.y))*0.16 - 0.02));
+    // pans: shallow arcs
+    float pan1 = smoothstep(0.012,0.005, abs(length((c-vec2(-0.21,-0.05))*vec2(1.0,2.2)) - 0.085)) * step(c.y, -0.045);
+    float pan2 = smoothstep(0.012,0.005, abs(length((c-vec2( 0.21,-0.05))*vec2(1.0,2.2)) - 0.085)) * step(c.y, -0.045);
+    float str1 = smoothstep(0.006,0.002, abs((c.x+0.21) + (c.y-0.10)*0.28)) * step(-0.05,c.y)*step(c.y,0.10)*step(abs(c.x+0.21),0.06);
+    float str2 = smoothstep(0.006,0.002, abs((c.x-0.21) - (c.y-0.10)*0.28)) * step(-0.05,c.y)*step(c.y,0.10)*step(abs(c.x-0.21),0.06);
+    engrave = clamp(ring + mask + beam + col_ + plinth + pan1 + pan2 + str1 + str2 + ch1*0.0, 0.0, 1.0);
+    base = mix(base, base*0.42, engrave);                       // recessed dark
+    base = mix(base, ${C3(P.brassHi)}, engrave*0.0);
+  }
+  float mn = fbm3(q*3.0);
+  vec3 Np = normalize(N + (mn-0.5)*0.10*vec3(1.0,0.6,1.0) + N*engrave*0.0);
+  float spec = mix(1.0, 0.35, tarn);
+  vec3 col = shade(base, Np, vWp, spec, mix(0.10, 0.42, tarn), 1.0);
+  // metals tint their reflections
+  col *= vec3(1.06, 0.97, 0.82);
+  outColor = vec4(col, 1.0);
+}
+`;
+
+// ── oxblood leather: voronoi wrinkle + sheen ────────────────────────────────
+const FRAG_LEATHER = /* glsl */`
+${'${COMMON}'}
+in vec3 vWp; in vec3 vN; in vec2 vUv; in vec4 vData;
+out vec4 outColor;
+void main(){
+  vec3 N = normalize(vN);
+  float seed = vData.x, variant = vData.y;
+  vec2 lp = vUv*vec2(26.0, 22.0) + seed*13.0;
+  float wr = vorEdge(lp);
+  float crease = smoothstep(0.16, 0.02, wr);
+  float mottle = fbm(lp*0.5 + 7.0);
+  vec3 base;
+  float spec;
+  if (variant < 0.5) {          // oxblood chair leather / desk inlay
+    base = mix(${C3(P.leatherB)}, ${C3(P.leatherA)}, mottle);
+    base *= 1.0 - crease*0.38;
+    base = mix(base, ${C3(0x7c3428)}, smoothstep(0.72,0.95,mottle)*0.3);   // worn sheen patches
+    spec = 0.5;
+  } else if (variant < 1.5) {   // carpet runner — matte wool, faint pattern
+    base = mix(${C3(P.carpetA)}, ${C3(P.carpetB)}, mottle);
+    float fig = smoothstep(0.4,0.6, sin(vUv.x*90.0)*sin(vUv.y*220.0)*0.5+0.5);
+    base = mix(base, ${C3(0x6e3424)}, fig*0.12);
+    float bord = smoothstep(0.055,0.045,min(vUv.y,1.0-vUv.y));
+    base = mix(base, ${C3(0x8a6a34)}, bord*0.35);
+    base *= 0.9 + 0.2*vnoise(lp*3.0);
+    spec = 0.05;
+  } else {                      // book cloth covers — colour drift per book
+    vec3 shelf = mix(${C3(0x4e2a1c)}, ${C3(0x2e3a2e)}, step(0.5, fract(seed*3.7)));
+    shelf = mix(shelf, ${C3(0x54321e)}, fract(seed*7.3)*0.5);
+    base = shelf * (0.85 + 0.3*mottle);
+    base *= 1.0 - crease*0.2;
+    spec = 0.25;
+  }
+  vec3 Np = normalize(N + (fbm(lp*2.0)-0.5)*0.10);
+  vec3 col = shade(base, Np, vWp, spec, 0.42, 0.92);
+  outColor = vec4(col, 1.0);
+}
+`;
+
+// ── plaster: matte lime, faint trowel mottle ────────────────────────────────
+const FRAG_PLASTER = /* glsl */`
+${'${COMMON}'}
+in vec3 vWp; in vec3 vN; in vec2 vUv; in vec4 vData;
+out vec4 outColor;
+void main(){
+  vec3 N = normalize(vN);
+  vec3 q = vWp*1.1;
+  float mott = fbm(q.xy*1.4 + q.z*0.7);
+  vec3 base = mix(${C3(P.plasterA)}, ${C3(P.plasterB)}, mott);
+  base *= 0.95 + 0.05*vnoise3(q*9.0);
+  float age = smoothstep(0.6, 0.95, fbm(q.xz*0.5 + 3.0));
+  base = mix(base, ${C3(0xb5a17e)}, age*0.16);
+  float edge = min(min(vUv.x,1.0-vUv.x), min(vUv.y,1.0-vUv.y));
+  float aoL = 0.80 + 0.20*smoothstep(0.0, 0.08, edge);   // coffer recess shading
+  vec3 col = shade(base, N, vWp, 0.06, 0.8, aoL);
+  outColor = vec4(col, 1.0);
+}
+`;
+
+// ── paper / white linen (documents, judge's collar, book pages) ─────────────
+const FRAG_PAPER = /* glsl */`
+${'${COMMON}'}
+in vec3 vWp; in vec3 vN; in vec2 vUv; in vec4 vData;
+out vec4 outColor;
+void main(){
+  vec3 N = normalize(vN);
+  float seed = vData.x;
+  vec3 base = ${C3(P.paperA)};
+  base *= 0.93 + 0.07*vnoise(vUv*40.0 + seed*9.0);
+  // faint ruled text lines on document sheets (variant 0), plain linen (1)
+  if (vData.y < 0.5) {
+    float line = step(0.72, fract(vUv.y*26.0 + seed)) * step(0.08+0.3*hash12(vec2(floor(vUv.y*26.0), seed)), vUv.x) * step(vUv.x, 0.92);
+    base *= 1.0 - line*0.22;
+  }
+  base *= 0.9 + 0.1*fbm(vUv*6.0 + seed);
+  vec3 col = shade(base, N, vWp, 0.05, 0.85, 0.95);
+  outColor = vec4(col, 1.0);
+}
+`;
+
+// ── judge's robe: near-black wool, velvet fresnel rim ───────────────────────
+const FRAG_ROBE = /* glsl */`
+${'${COMMON}'}
+in vec3 vWp; in vec3 vN; in vec2 vUv; in vec4 vData;
+out vec4 outColor;
+void main(){
+  vec3 N = normalize(vN);
+  vec3 V = normalize(uCamPos - vWp);
+  float folds = fbm(vec2(vUv.x*9.0, vUv.y*3.5));
+  vec3 base = ${C3(P.robeA)} * (0.8 + 0.5*folds);
+  // velvet: strong grazing retro-reflection picks the silhouette out of shadow
+  float rim = pow(1.0 - max(dot(N, V), 0.0), 3.0);
+  vec3 col = shade(base, N, vWp, 0.10, 0.9, 0.9);
+  col += ${C3(0x37364a)} * rim * (0.14 + 0.5*bakeAt(vWp,N).a);
+  outColor = vec4(col, 1.0);
+}
+`;
+
+// ── window glass: HDR sky + leading silhouette (emissive, drives the bake) ──
+const FRAG_GLASS = /* glsl */`
+${'${COMMON}'}
+in vec3 vWp; in vec3 vN; in vec2 vUv; in vec4 vData;
+out vec4 outColor;
+void main(){
+  // sky gradient seen through old glass: bright zenith, warm haze at sill
+  float h = clamp(vUv.y, 0.0, 1.0);
+  vec3 sky = mix(vec3(2.6, 2.9, 3.4), vec3(6.5, 7.4, 9.0), h*h);
+  sky = mix(sky, vec3(7.5, 6.4, 4.6), (1.0-h)*(1.0-h)*0.55);          // low warm band
+  // wobbly antique glass: slight brightness ripple
+  sky *= 0.92 + 0.14*vnoise(vUv*vec2(26.0, 30.0) + vData.x);
+  // soft silhouette of a far façade line to break the void
+  float far_ = smoothstep(0.30, 0.28, h) * smoothstep(0.55, 0.9, vnoise(vec2(vUv.x*7.0 + vData.x, 1.3)));
+  sky *= 1.0 - far_*0.35;
+  outColor = vec4(sky * 1.35, 1.0);
+}
+`;
+
+// ── lamp glass (bench lamp shade + fixture globes) — emissive, dynamic ──────
+const FRAG_LAMPGLASS = /* glsl */`
+${'${COMMON}'}
+in vec3 vWp; in vec3 vN; in vec2 vUv; in vec4 vData;
+out vec4 outColor;
+void main(){
+  vec3 N = normalize(vN);
+  float kind = vData.y;   // 0 = fixture globe (house), 1 = bench lamp shade (amp), 2 = lectern pendant
+  vec3 col;
+  if (kind < 0.5) {
+    vec3 warm = vec3(1.0, 0.66, 0.34);
+    float glow = uHouse;
+    col = warm * (0.18 + 5.2*glow) * (0.75 + 0.25*vUv.y);
+  } else if (kind < 1.5) {
+    // brass-banker's-lamp green glass: transmits green, hot rim below
+    vec3 green = vec3(0.10, 0.55, 0.28);
+    float hot = smoothstep(0.35, 0.0, vUv.y);
+    col = green * (0.10 + 7.5*uLampI) + vec3(1.0,0.72,0.35)*hot*6.5*uLampI;
+  } else {
+    col = vec3(1.0, 0.85, 0.58) * (0.06 + 5.0*uLectI);
+  }
+  // shell still receives a hint of room light so it never reads pure black
+  col += shade(vec3(0.06), N, vWp, 0.4, 0.3, 1.0)*0.4;
+  outColor = vec4(col, 1.0);
+}
+`;
+
+// ── volumetric light shafts: prisms extruded from the windows ───────────────
+const VERT_SHAFT = /* glsl */`
+out vec3 vWp; out vec3 vLoc;
+in vec4 aData;
+out vec4 vData;
+void main(){
+  vWp = (modelMatrix * vec4(position,1.0)).xyz;
+  vLoc = vec3(uv, aData.z);           // u across window, v along the beam 0..1
+  vData = aData;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0);
+}
+`;
+const FRAG_SHAFT = /* glsl */`
+${'${COMMON}'}
+in vec3 vWp; in vec3 vLoc; in vec4 vData;
+out vec4 outColor;
+void main(){
+  vec3 V = normalize(vWp - uCamPos);
+  float along = vLoc.y;
+  // beam fades with travel and toward its cross-section rim
+  float rim = smoothstep(0.0, 0.24, vLoc.x) * smoothstep(1.0, 0.76, vLoc.x) * vLoc.z;
+  float body = exp(-along*1.9);
+  // drifting dust density: slow diagonal churn through the beam
+  vec3 dp = vWp*vec3(0.5, 0.35, 0.5) + vec3(uTime*0.010, -uTime*0.017, uTime*0.006);
+  float dust = fbm3(dp*2.6);
+  dust = 0.35 + 0.65*smoothstep(0.30, 0.78, dust);
+  // stronger when looking up-beam into the light
+  float toward = pow(max(dot(-V, uSunDir), 0.0), 2.5);
+  float i = rim * body * dust * (0.35 + 0.9*toward);
+  vec3 col = uSunCol * vec3(1.0, 0.93, 0.80) * i * 0.85;
+  outColor = vec4(col, 1.0);
+}
+`;
+
+// ── dust motes: seeded points drifting inside the shafts ────────────────────
+const VERT_MOTE = /* glsl */`
+uniform float uTime2; uniform float uPix;
+in float aSeed;
+out float vA;
+void main(){
+  vec3 p = position;
+  float s = aSeed*43.7;
+  float t = uTime2*0.55;
+  p.x += sin(t*0.31 + s)*0.22 + sin(t*0.83 + s*2.7)*0.06;
+  p.y += sin(t*0.23 + s*1.7)*0.30 - fract(s*0.371 + t*0.013)*1.2 + 0.6;
+  p.z += cos(t*0.27 + s*3.1)*0.22;
+  vec4 mv = viewMatrix * vec4(p, 1.0);
+  float d = -mv.z;
+  gl_PointSize = clamp(uPix*2.4/max(d,0.5), 0.75, 3.5);
+  vA = 0.5 + 0.5*sin(t*1.3 + s*17.0);
+  gl_Position = projectionMatrix * mv;
+}
+`;
+const FRAG_MOTE = /* glsl */`
+precision highp float;
+uniform vec3 uSunCol;
+in float vA;
+out vec4 outColor;
+void main(){
+  vec2 c = gl_PointCoord*2.0 - 1.0;
+  float a = smoothstep(1.0, 0.15, length(c));
+  outColor = vec4(uSunCol*vec3(1.0,0.94,0.8)*2.2, a*vA*0.5);
+}
+`;
+
+// ── post: adaptive exposure → ACES → grade → vignette → grain → gamma ───────
+const VERT_POST = /* glsl */`
+out vec2 vUvP;
+void main(){ vUvP = position.xy*0.5 + 0.5; gl_Position = vec4(position.xy, 1.0, 1.0); }
+`;
+const FRAG_POST = /* glsl */`
+precision highp float;
+uniform sampler2D tScene;
+uniform float uExposure, uT;
+in vec2 vUvP;
+out vec4 outColor;
+float phash(vec2 p){ vec3 p3 = fract(vec3(p.xyx)*0.1031); p3 += dot(p3,p3.yzx+33.33); return fract((p3.x+p3.y)*p3.z); }
+vec3 aces(vec3 x){ return clamp(x*(2.51*x+0.03)/(x*(2.43*x+0.59)+0.14), 0.0, 1.0); }
+void main(){
+  vec3 c = texture(tScene, vUvP).rgb;
+  c *= uExposure;
+  c = aces(c);
+  c = pow(c, vec3(1.015, 1.0, 0.982));               // gentle warm grade
+  float r = length(vUvP - 0.5);
+  c *= 1.0 - 0.34*r*r - 0.10*r*r*r*r;                // vignette
+  c += (phash(vUvP*vec2(1913.0,1021.0) + fract(uT)*7.0) - 0.5)*0.0085;  // grain
+  c = pow(max(c, vec3(0.0)), vec3(1.0/2.2));
+  outColor = vec4(c, 1.0);
+}
+`;
+const FRAG_LUM = /* glsl */`
+precision highp float;
+uniform sampler2D tScene;
+out vec4 outColor;
+void main(){
+  vec3 s = vec3(0.0);
+  for (int i=0;i<4;i++) for (int j=0;j<4;j++)
+    s += texture(tScene, vec2(0.2 + 0.2*float(i), 0.25 + 0.17*float(j))).rgb;
+  s /= 16.0;
+  float l = dot(s, vec3(0.2126, 0.7152, 0.0722));
+  outColor = vec4(l/(1.0+l), 0.0, 0.0, 1.0);
+}
+`;
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  GEOMETRY KIT — everything is merged into one draw per material.
+// ═══════════════════════════════════════════════════════════════════════════
+const occluders = [];   // AABBs registered for the bake
+function occlude(cx, cy, cz, sx, sy, sz) {
+  occluders.push([cx - sx/2, cy - sy/2, cz - sz/2, cx + sx/2, cy + sy/2, cz + sz/2]);
+}
+
+class Merger {
+  constructor() { this.pos = []; this.nrm = []; this.uv = []; this.data = []; }
+  add(geom, matrix, data = [0, 0, 0, 0]) {
+    const g = geom.index ? geom.toNonIndexed() : geom;
+    const p = g.attributes.position, n = g.attributes.normal, u = g.attributes.uv;
+    const nm = new THREE.Matrix3().getNormalMatrix(matrix);
+    const v = new THREE.Vector3();
+    for (let i = 0; i < p.count; i++) {
+      v.fromBufferAttribute(p, i).applyMatrix4(matrix);
+      this.pos.push(v.x, v.y, v.z);
+      v.fromBufferAttribute(n, i).applyMatrix3(nm).normalize();
+      this.nrm.push(v.x, v.y, v.z);
+      if (u) this.uv.push(u.getX(i), u.getY(i)); else this.uv.push(0, 0);
+      this.data.push(data[0], data[1], data[2], data[3]);
+    }
+    if (g !== geom) g.dispose();
+  }
+  build() {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(this.pos, 3));
+    g.setAttribute('normal', new THREE.Float32BufferAttribute(this.nrm, 3));
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(this.uv, 2));
+    g.setAttribute('aData', new THREE.Float32BufferAttribute(this.data, 4));
+    return g;
+  }
+}
+const M4 = () => new THREE.Matrix4();
+function mat(x, y, z, rx = 0, ry = 0, rz = 0, sx = 1, sy = 1, sz = 1) {
+  const m = M4();
+  m.makeRotationFromEuler(new THREE.Euler(rx, ry, rz));
+  m.scale(new THREE.Vector3(sx, sy, sz));
+  m.setPosition(x, y, z);
+  return m;
+}
+const box = (w, h, d) => new THREE.BoxGeometry(w, h, d);
+const cyl = (rt, rb, h, seg = 14) => new THREE.CylinderGeometry(rt, rb, h, seg);
+const sph = (r, w = 12, h = 10) => new THREE.SphereGeometry(r, w, h);
+function lathe(profile, seg = 16) {
+  return new THREE.LatheGeometry(profile.map(p => new THREE.Vector2(p[0], p[1])), seg);
+}
+// classical moulding run: stacked steps along one wall segment
+function moulding(merger, x, y, z, len, axis, steps, data) {
+  for (const [dy, h, depth] of steps) {
+    const m = axis === 'x' ? mat(x, y + dy, z, 0, 0, 0, len, h, depth)
+                           : mat(x, y + dy, z, 0, Math.PI / 2, 0, len, h, depth);
+    merger.add(box(1, 1, 1), m, data);
+  }
+}
+
+// arched window opening outline (also reused for shaft prism cross-section)
+function archPoints(w, sill, spring, r, n = 7) {
+  const pts = [];
+  pts.push([-w/2, sill], [w/2, sill], [w/2, spring]);
+  for (let i = 1; i <= n; i++) {
+    const a = (i / (n + 1)) * Math.PI;
+    pts.push([Math.cos(a) * w/2, spring + Math.sin(a) * r]);
+  }
+  pts.push([-w/2, spring]);
+  return pts;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  PresenceScene
+// ═══════════════════════════════════════════════════════════════════════════
+const CEREMONY_STATES = ['IDLE', 'RISING', 'AWAITING', 'COURT_SPEAKING', 'ADJOURNED'];
+
+// pure ceremony reducer: (state, event) → state.  Visuals NEVER read events —
+// they derive from the current state alone (deriveTargets below).
+function ceremonyReduce(state, event) {
+  switch (event.type) {
+    case 'SET_STATE':     return CEREMONY_STATES.includes(event.state) ? event.state : state;
+    case 'CALL_TO_ORDER': return state === 'IDLE' || state === 'ADJOURNED' ? 'RISING' : state;
+    case 'JUDGE_SEATED':  return state === 'RISING' ? 'AWAITING' : state;
+    case 'COURT_SPEAKS':  return state === 'AWAITING' ? 'COURT_SPEAKING' : state;
+    case 'YIELD_FLOOR':   return state === 'COURT_SPEAKING' ? 'AWAITING' : state;
+    case 'ADJOURN':       return state === 'ADJOURNED' ? state : 'ADJOURNED';
+    case 'RESET':         return 'IDLE';
+    default:              return state;
+  }
+}
+// pure: current state → visual targets.  Amp is applied separately (and only
+// gates the bench lamp during COURT_SPEAKING — amp 0 kills it instantly).
+function deriveTargets(state) {
+  switch (state) {
+    case 'IDLE':           return { judgeY: -1.05, judgeLean: 0.00, house: 0.42, lect: 0.0, lampFloor: 0.0, exposure: 1.16 };
+    case 'RISING':         return { judgeY:  0.17, judgeLean: 0.00, house: 0.95, lect: 0.0, lampFloor: 0.04, exposure: 1.06 };
+    case 'AWAITING':       return { judgeY:  0.00, judgeLean: 0.04, house: 0.88, lect: 1.0, lampFloor: 0.05, exposure: 1.04 };
+    case 'COURT_SPEAKING': return { judgeY:  0.00, judgeLean: 0.10, house: 0.70, lect: 0.32, lampFloor: 0.0, exposure: 1.02 };
+    case 'ADJOURNED':      return { judgeY: -1.05, judgeLean: 0.00, house: 0.16, lect: 0.0, lampFloor: 0.0, exposure: 1.28 };
+  }
+}
+
+class PresenceScene {
+  constructor({ container, clock } = {}) {
+    this.clock = clock || RealClock();
+    this.container = container || document.body;
+    this.state = 'IDLE';
+    this.amp = 0;
+    this.transcript = [];
+    this.cur = { ...deriveTargets('IDLE') };   // eased-toward copies of targets
+    this.exposure = this.cur.exposure;
+    this.bakeMs = 0;
+    this.fps = 0;
+    this._fpsAcc = 0; this._fpsN = 0;
+    this._lampPos = new THREE.Vector3(1.25, 3.02, -7.16);
+    this._lectPos = new THREE.Vector3(0, 3.4, 1.9);
+    this._frozen = false;
+  }
+
+  // ── public seams ──────────────────────────────────────────────────────────
+  setAmp(a) { this.amp = Math.min(1, Math.max(0, a)); }
+  setState(s) { const next = ceremonyReduce(this.state, { type: 'SET_STATE', state: s }); this._enter(next); }
+  dispatch(event) { this._enter(ceremonyReduce(this.state, event)); }
+  loadEnvironment(asset) {
+    // STUB — future: replace this.staticEnv with a baked-lighting splat asset;
+    // the dynamic rig (this.rig) composites over whatever environment is set.
+    console.info('[PresenceScene] loadEnvironment stub', asset);
+    return Promise.resolve(false);
+  }
+  pushTranscript(line) {
+    // STUB — future: line-by-line transcript rendering surface.
+    this.transcript.push(String(line));
+    const el = document.getElementById('transcript');
+    if (el) el.textContent = this.transcript.slice(-1)[0];
+  }
+  _enter(next) {
+    if (next === this.state) return;
+    this.state = next;
+    this.stateEnteredAt = this.clock.now();
+    document.querySelectorAll('#ui button[data-state]').forEach(b =>
+      b.classList.toggle('active', b.dataset.state === this.state));
+  }
+
+  // ── boot ──────────────────────────────────────────────────────────────────
+  async init() {
+    const setLoad = (f, msg) => {
+      document.getElementById('loadbar').style.width = `${(f * 100) | 0}%`;
+      if (msg) document.getElementById('loadmsg').textContent = msg;
+      return new Promise(r => requestAnimationFrame(r));
+    };
+    await setLoad(0.02, 'raising the walls…');
+
+    const renderer = this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.toneMapping = THREE.NoToneMapping;
+    renderer.autoClear = true;
+    this.container.appendChild(renderer.domElement);
+
+    const scene = this.scene = new THREE.Scene();
+    this.staticEnv = new THREE.Group(); this.staticEnv.name = 'staticEnvironment';
+    this.rig = new THREE.Group();       this.rig.name = 'dynamicRig';
+    scene.add(this.staticEnv, this.rig);
+
+    const camera = this.camera = new THREE.PerspectiveCamera(52, innerWidth / innerHeight, 0.1, 80);
+    camera.position.set(0.42, 1.66, 3.15);          // the advocate, at the podium
+    camera.lookAt(0.0, 2.45, -8.6);
+
+    // ── shared uniforms (one object → every material updates at once) ──────
+    const G = this.G = {
+      uTime:   { value: 0 },
+      uVol:    { value: null },
+      uVolMin: { value: new THREE.Vector3(ROOM.x0, ROOM.y0, ROOM.z0) },
+      uVolSize:{ value: new THREE.Vector3(ROOM.x1 - ROOM.x0, ROOM.y1 - ROOM.y0, ROOM.z1 - ROOM.z0) },
+      uSunDir: { value: SUN_DIR },
+      uSunCol: { value: new THREE.Vector3(...P.sunCol) },
+      uWinCol: { value: new THREE.Vector3(...P.winCol) },
+      uAmbCol: { value: new THREE.Vector3(...P.ambCol) },
+      uFixCol: { value: new THREE.Vector3(...P.fixCol) },
+      uHouse:  { value: 0.42 },
+      uLampPos:{ value: this._lampPos },
+      uLampI:  { value: 0 },
+      uLectPos:{ value: this._lectPos },
+      uLectI:  { value: 0 },
+      uCamPos: { value: camera.position },
+    };
+
+    const common = GLSL_COMMON;
+    const mkMat = (frag, extra = {}, opts = {}) => new THREE.ShaderMaterial({
+      glslVersion: THREE.GLSL3,
+      vertexShader: opts.vert || VERT_STD,
+      fragmentShader: frag.replace('${COMMON}', common),
+      uniforms: { ...G, ...extra },
+      ...opts.mat,
+    });
+
+    // seal text ring — generated in-file (data, not an external asset)
+    const sealCanvas = document.createElement('canvas');
+    sealCanvas.width = sealCanvas.height = 512;
+    {
+      const cx = sealCanvas.getContext('2d');
+      cx.fillStyle = '#000'; cx.fillRect(0, 0, 512, 512);
+      cx.fillStyle = '#fff';
+      cx.font = 'bold 44px Georgia, serif';
+      cx.textAlign = 'center'; cx.textBaseline = 'middle';
+      const ringText = (txt, r, a0, a1) => {
+        const span = a1 - a0;
+        for (let i = 0; i < txt.length; i++) {
+          const a = a0 + span * (i + 0.5) / txt.length;
+          cx.save();
+          cx.translate(256 + Math.cos(a) * r, 256 + Math.sin(a) * r);
+          cx.rotate(a + Math.PI / 2);
+          cx.fillText(txt[i], 0, 0);
+          cx.restore();
+        }
+      };
+      ringText('THE COURT', 205, -Math.PI * 0.82, -Math.PI * 0.18);
+      ringText('SINE TIMORE', 205, Math.PI * 0.22, Math.PI * 0.78);  // generic motto: "without fear"
+      cx.beginPath(); cx.arc(256, 256, 8, 0, 7); cx.fill();
+    }
+    const sealTex = new THREE.CanvasTexture(sealCanvas);
+    sealTex.colorSpace = THREE.NoColorSpace;
+
+    const MATS = this.MATS = {
+      marble:  mkMat(FRAG_MARBLE),
+      wood:    mkMat(FRAG_WOOD),
+      mosaic:  mkMat(FRAG_MOSAIC),
+      brass:   mkMat(FRAG_BRASS, { uSealTex: { value: sealTex } }),
+      leather: mkMat(FRAG_LEATHER),
+      plaster: mkMat(FRAG_PLASTER),
+      paper:   mkMat(FRAG_PAPER),
+      robe:    mkMat(FRAG_ROBE),
+      glass:   mkMat(FRAG_GLASS),
+      lamp:    mkMat(FRAG_LAMPGLASS),
+    };
+
+    await setLoad(0.06, 'quarrying the marble…');
+    this._buildRoom(MATS);
+    await setLoad(0.16, 'joining the mahogany…');
+    this._buildFurniture(MATS);
+    this._buildRig(MATS);
+    this._buildAtmosphere(mkMat);
+
+    // ── bake the light volume ───────────────────────────────────────────────
+    const t0 = performance.now();
+    await this._bakeLightVolume(setLoad);
+    this.bakeMs = Math.round(performance.now() - t0);
+
+    // ── post pipeline ───────────────────────────────────────────────────────
+    this.sceneRT = new THREE.WebGLRenderTarget(innerWidth * renderer.getPixelRatio(), innerHeight * renderer.getPixelRatio(), {
+      type: THREE.HalfFloatType, samples: 4, depthBuffer: true,
+    });
+    this.lumRT = new THREE.WebGLRenderTarget(1, 1, { type: THREE.UnsignedByteType });
+    const triangle = new THREE.BufferGeometry();
+    triangle.setAttribute('position', new THREE.Float32BufferAttribute([-1, -1, 0, 3, -1, 0, -1, 3, 0], 3));
+    this.postMat = new THREE.ShaderMaterial({
+      glslVersion: THREE.GLSL3, vertexShader: VERT_POST, fragmentShader: FRAG_POST,
+      uniforms: { tScene: { value: this.sceneRT.texture }, uExposure: { value: 1.0 }, uT: { value: 0 } },
+      depthTest: false, depthWrite: false,
+    });
+    this.lumMat = new THREE.ShaderMaterial({
+      glslVersion: THREE.GLSL3, vertexShader: VERT_POST, fragmentShader: FRAG_LUM,
+      uniforms: { tScene: { value: this.sceneRT.texture } },
+      depthTest: false, depthWrite: false,
+    });
+    this.postScene = new THREE.Scene();
+    this.postQuad = new THREE.Mesh(triangle, this.postMat);
+    this.postQuad.frustumCulled = false;
+    this.postScene.add(this.postQuad);
+    this.postCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+    this._lumPix = new Uint8Array(4);
+    this._frame = 0;
+
+    addEventListener('resize', () => {
+      camera.aspect = innerWidth / innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(innerWidth, innerHeight);
+      const pr = renderer.getPixelRatio();
+      this.sceneRT.setSize(innerWidth * pr, innerHeight * pr);
+    });
+
+    await setLoad(1.0, 'court is assembled');
+    document.getElementById('loader').classList.add('done');
+  }
+
+  // ═════════════════════════════════════════════════════════════════════════
+  //  STATIC ENVIRONMENT
+  // ═════════════════════════════════════════════════════════════════════════
+  _buildRoom(MATS) {
+    const rng = mulberry32(4021);
+    const marble = new Merger(), wood = new Merger(), plaster = new Merger(),
+          brass = new Merger(), mosaic = new Merger(), glass = new Merger();
+    const { x0, x1, y0, y1, z0, z1 } = ROOM;
+    const W = x1 - x0, D = z1 - z0;
+
+    // ── floor: pavonazzo field + verde border bands + mosaic border ────────
+    marble.add(box(W - 3.0, 0.2, D - 3.0), mat((x0+x1)/2, -0.1, (z0+z1)/2), [0, 0, 0, 0]);
+    occlude((x0+x1)/2, -0.1, (z0+z1)/2, W, 0.2, D);
+    // mosaic border ring (four strips, 1.05 m wide)
+    const bw = 1.05, inX0 = x0 + 0.45, inX1 = x1 - 0.45, inZ0 = z0 + 0.45, inZ1 = z1 - 0.45;
+    mosaic.add(box(inX1 - inX0, 0.202, bw), mat((x0+x1)/2, -0.1, inZ0 + bw/2), [0, 1, 46, 1]);
+    mosaic.add(box(inX1 - inX0, 0.202, bw), mat((x0+x1)/2, -0.1, inZ1 - bw/2), [0, 1, 46, 1]);
+    mosaic.add(box(bw, 0.202, inZ1 - inZ0 - 2*bw), mat(inX0 + bw/2, -0.1, (z0+z1)/2, 0, Math.PI/2, 0), [0, 1, 64, 1]);
+    mosaic.add(box(bw, 0.202, inZ1 - inZ0 - 2*bw), mat(inX1 - bw/2, -0.1, (z0+z1)/2, 0, Math.PI/2, 0), [0, 1, 64, 1]);
+    // verde edging just inside the mosaic
+    for (const [cx, cz, sx, sz] of [
+      [(x0+x1)/2, inZ0 + bw + 0.12, inX1-inX0-2*bw, 0.24], [(x0+x1)/2, inZ1 - bw - 0.12, inX1-inX0-2*bw, 0.24],
+      [inX0 + bw + 0.12, (z0+z1)/2, 0.24, inZ1-inZ0-2*bw-0.48], [inX1 - bw - 0.12, (z0+z1)/2, 0.24, inZ1-inZ0-2*bw-0.48],
+    ]) marble.add(box(sx, 0.204, sz), mat(cx, -0.098, cz), [1, 2, 0, 0]);
+
+    // ── walls: marble wainscot to 2.6, plaster field above, pilaster rhythm ─
+    const wainH = 2.6, wainT = 0.22;
+    const wallSegs = [
+      // [wall axis, fixed coord, from, to, normal facing +?]
+      ['z', z0, x0, x1],        // back wall (behind bench)
+      ['z', z1, x0, x1],        // rear wall (behind gallery)
+      ['x', x1, z0, z1],        // right wall
+    ];
+    for (const [axis, at, a0, a1] of wallSegs) {
+      const len = a1 - a0, mid = (a0 + a1) / 2;
+      if (axis === 'z') {
+        marble.add(box(len, wainH, wainT), mat(mid, wainH/2, at + (at < 0 ? wainT/2 : -wainT/2)), [rng()*9, 0, 0, 0]);
+        plaster.add(box(len, y1 - wainH, 0.16), mat(mid, wainH + (y1-wainH)/2, at + (at < 0 ? 0.08 : -0.08)), [0,0,0,0]);
+        occlude(mid, y1/2, at, len, y1*2, 0.3);
+      } else {
+        marble.add(box(wainT, wainH, len), mat(at - wainT/2, wainH/2, mid), [rng()*9, 0, 0, 0]);
+        plaster.add(box(0.16, y1 - wainH, len), mat(at - 0.08, wainH + (y1-wainH)/2, mid), [0,0,0,0]);
+        occlude(at, y1/2, mid, 0.3, y1*2, len);
+      }
+    }
+    // window wall (-X): built in segments around the three openings
+    {
+      const at = x0;
+      const zsEdges = [z0];
+      for (const wnd of WINDOWS) { zsEdges.push(wnd.z - wnd.w/2, wnd.z + wnd.w/2); }
+      zsEdges.push(z1);
+      for (let i = 0; i < zsEdges.length; i += 2) {
+        const a = zsEdges[i], b = zsEdges[i + 1];
+        const mid = (a + b) / 2, len = b - a;
+        marble.add(box(wainT, wainH, len), mat(at + wainT/2, wainH/2, mid), [rng()*9, 0, 0, 0]);
+        plaster.add(box(0.30, y1 - wainH, len), mat(at + 0.15, wainH + (y1-wainH)/2, mid), [0,0,0,0]);
+        occlude(at + 0.15, y1/2, mid, 0.34, y1*2, len);
+      }
+      for (const wnd of WINDOWS) {
+        const topY = wnd.spring + wnd.r;
+        // solid below sill and above arch
+        marble.add(box(wainT, wnd.sill, wnd.w), mat(at + wainT/2, wnd.sill/2, wnd.z), [rng()*9, 0, 0, 0]);
+        occlude(at + 0.15, wnd.sill/2, wnd.z, 0.34, wnd.sill, wnd.w);
+        plaster.add(box(0.30, y1 - topY, wnd.w), mat(at + 0.15, topY + (y1-topY)/2, wnd.z), [0,0,0,0]);
+        occlude(at + 0.15, topY + (y1-topY)/2, wnd.z, 0.34, y1 - topY, wnd.w);
+        // occlude the small corners beside the arch (approximate with two boxes)
+        occlude(at + 0.15, wnd.spring + wnd.r*0.82, wnd.z - wnd.w*0.38, 0.34, wnd.r*0.5, wnd.w*0.24);
+        occlude(at + 0.15, wnd.spring + wnd.r*0.82, wnd.z + wnd.w*0.38, 0.34, wnd.r*0.5, wnd.w*0.24);
+        // deep marble reveal
+        const rev = 0.5;
+        marble.add(box(rev, 0.16, wnd.w + 0.3), mat(at + rev/2, wnd.sill - 0.08, wnd.z), [rng()*9, 0, 0, 0]); // sill slab
+        marble.add(box(rev, topY - wnd.sill, 0.14), mat(at + rev/2, (wnd.sill+topY)/2, wnd.z - wnd.w/2 - 0.07), [rng()*9, 0, 0, 0]);
+        marble.add(box(rev, topY - wnd.sill, 0.14), mat(at + rev/2, (wnd.sill+topY)/2, wnd.z + wnd.w/2 + 0.07), [rng()*9, 0, 0, 0]);
+        // glass sheet + bronze mullions
+        const gw = wnd.w, gh = topY - wnd.sill;
+        const gplane = new THREE.PlaneGeometry(gw, gh, 1, 1);
+        glass.add(gplane, mat(at + 0.06, wnd.sill + gh/2, wnd.z, 0, Math.PI/2, 0), [rng()*9, 0, 0, 0]);
+        for (let i = 0; i <= 3; i++)   // vertical bronze mullions
+          brass.add(box(0.05, gh, 0.045), mat(at + 0.10, wnd.sill + gh/2, wnd.z - gw/2 + (gw/3)*i), [rng()*9, 0, 0, 0]);
+        for (let j = 1; j <= 4; j++)   // transoms
+          brass.add(box(0.05, 0.045, gw), mat(at + 0.10, wnd.sill + (gh/5)*j, wnd.z), [rng()*9, 0, 0, 0]);
+      }
+    }
+
+    // ── wainscot panel rhythm: raised marble panels + cap/base mouldings ────
+    const panelPitch = 1.62;
+    for (const [axis, at, a0, a1, sign] of [
+      ['z', z0 + wainT, x0 + 0.4, x1 - 0.4, 1], ['z', z1 - wainT, x0 + 0.4, x1 - 0.4, -1],
+      ['x', x1 - wainT, z0 + 0.4, z1 - 0.4, -1],
+    ]) {
+      const n = Math.floor((a1 - a0) / panelPitch);
+      for (let i = 0; i < n; i++) {
+        const c = a0 + (i + 0.5) * ((a1 - a0) / n);
+        const pw = (a1 - a0) / n - 0.30;
+        const m = axis === 'z' ? mat(c, 1.45, at + sign*0.03, 0, 0, 0, pw, 1.7, 0.06)
+                               : mat(at + sign*0.03, 1.45, c, 0, Math.PI/2, 0, pw, 1.7, 0.06);
+        marble.add(box(1, 1, 1), m, [rng()*9, 0, 0, 0]);
+      }
+      moulding(marble, axis === 'z' ? (a0+a1)/2 : at + sign*0.05, 0, axis === 'z' ? at + sign*0.05 : (a0+a1)/2,
+        a1 - a0, axis === 'z' ? 'x' : 'z',
+        [[2.56, 0.09, 0.16], [2.475, 0.05, 0.12], [0.10, 0.22, 0.14]], [rng()*9, 0, 0, 0]);
+    }
+
+    // ── pilasters + cornice + coffered ceiling ──────────────────────────────
+    const cornY = 7.15;
+    for (const [axis, at, a0, a1, sign] of [
+      ['x', x1, z0, z1, -1], ['x', x0, z0, z1, 1],
+    ]) {
+      const n = 5;
+      for (let i = 0; i <= n; i++) {
+        const c = a0 + i * ((a1 - a0) / n);
+        if (axis === 'x' && at === x0) {  // skip pilasters that would cross windows
+          if (WINDOWS.some(w => Math.abs(c - w.z) < w.w/2 + 0.35)) continue;
+        }
+        plaster.add(box(0.5, cornY - wainH, 0.13), mat(at + sign*0.145, wainH + (cornY-wainH)/2, c, 0, Math.PI/2, 0), [0,0,0,0]);
+        brass.add(box(0.13, 0.34, 0.56), mat(at + sign*0.16, cornY - 0.35, c, 0, 0, 0), [rng()*9, 0, 0, 0]); // gilt capital block
+      }
+    }
+    // cornice run: stacked mouldings + dentils on all four walls
+    for (const [axis, at, a0, a1, sign] of [
+      ['z', z0, x0, x1, 1], ['z', z1, x0, x1, -1], ['x', x1, z0, z1, -1], ['x', x0, z0, z1, 1],
+    ]) {
+      const mid = (a0 + a1)/2, len = a1 - a0;
+      moulding(plaster, axis === 'z' ? mid : at + sign*0.26, cornY, axis === 'z' ? at + sign*0.26 : mid,
+        len, axis === 'z' ? 'x' : 'z',
+        [[0.0, 0.18, 0.34], [0.20, 0.14, 0.52], [0.36, 0.16, 0.70], [0.52, 0.10, 0.86]], [0,0,0,0]);
+      const nd = Math.floor(len / 0.42);
+      for (let i = 0; i < nd; i++) {
+        const c = a0 + (i + 0.5) * (len / nd);
+        const m = axis === 'z' ? mat(c, cornY + 0.13, at + sign*0.47, 0, 0, 0, 0.16, 0.12, 0.10)
+                               : mat(at + sign*0.47, cornY + 0.13, c, 0, 0, 0, 0.10, 0.12, 0.16);
+        plaster.add(box(1, 1, 1), m, [0, 0, 0, 0]);
+      }
+      // gilt bead above the dentils
+      const m2 = axis === 'z' ? mat(mid, cornY + 0.30, at + sign*0.50, 0, 0, 0, len, 0.05, 0.05)
+                              : mat(at + sign*0.50, cornY + 0.30, mid, 0, 0, 0, 0.05, 0.05, len);
+      brass.add(box(1, 1, 1), m2, [rng()*9, 0, 0, 0]);
+    }
+    occlude(0, y1 + 0.4, 0, W + 2, 1.2, D + 2); // ceiling slab occluder
+    // coffers: beams grid with recessed panels and gilt rosettes
+    const nx = 4, nz = 6, bx = 0.34, cofD = 0.34;
+    const cellW = (W - 1.6) / nx, cellD = (D - 1.6) / nz;
+    plaster.add(box(W, 0.1, D), mat(0, y1 + 0.05, 0), [0,0,0,0]);   // slab above coffers
+    for (let i = 0; i <= nx; i++)
+      plaster.add(box(bx, cofD, D - 1.2), mat(x0 + 0.8 + i*cellW, y1 - cofD/2, 0), [0,0,0,0]);
+    for (let j = 0; j <= nz; j++)
+      plaster.add(box(W - 1.2, cofD, bx), mat(0, y1 - cofD/2, z0 + 0.8 + j*cellD), [0,0,0,0]);
+    for (let i = 0; i < nx; i++) for (let j = 0; j < nz; j++) {
+      const cx = x0 + 0.8 + (i + 0.5)*cellW, cz = z0 + 0.8 + (j + 0.5)*cellD;
+      plaster.add(box(cellW - bx, 0.06, cellD - bx), mat(cx, y1 - 0.03, cz), [0,0,0,0]);
+      brass.add(box(cellW - bx - 0.10, 0.03, 0.07), mat(cx, y1 - cofD + 0.015, cz - (cellD-bx)/2 + 0.05), [rng()*9,0,0,0]);
+      brass.add(cyl(0.10, 0.13, 0.10, 10), mat(cx, y1 - 0.10, cz), [rng()*9, 0, 0, 0]);  // rosette boss
+    }
+
+    // ── the bench wall: mahogany panelling, columns, lunette, seal ──────────
+    {
+      const bz = z0 + 0.24;
+      wood.add(box(9.4, 4.6, 0.18), mat(0, 2.5 + 0.55, bz + 0.09), [3, 0, 0, 0]);
+      // panel rhythm on it
+      for (let i = 0; i < 5; i++) {
+        const c = -3.5 + i * 1.75;
+        wood.add(box(1.35, 3.3, 0.07), mat(c, 3.05, bz + 0.20), [i * 1.7 + 1, 0, 0, 0]);
+        wood.add(box(1.05, 2.9, 0.035), mat(c, 3.05, bz + 0.235), [i * 2.3 + 5, 0, 0, 0]);
+      }
+      occlude(0, 2.8, bz + 0.1, 9.4, 5.6, 0.4);
+      moulding(wood, 0, 5.3, bz + 0.22, 9.6, 'x', [[0, 0.14, 0.30], [0.13, 0.09, 0.42]], [7, 0, 0, 0]);
+      // lunette arch of gold mosaic above the bench
+      const lun = new THREE.CircleGeometry(2.55, 40, 0, Math.PI);
+      mosaic.add(lun, mat(0, 5.45, bz + 0.13), [0, 0, 74, 74]);
+      const lunRim = new THREE.TorusGeometry(2.55, 0.075, 8, 40, Math.PI);
+      brass.add(lunRim, mat(0, 5.45, bz + 0.16), [1, 0, 0, 0]);
+      // seal: brass disc, scales in relief, ring text
+      const seal = new THREE.CylinderGeometry(0.78, 0.78, 0.07, 40);
+      brass.add(seal, mat(0, 4.32, bz + 0.30, Math.PI/2, 0, 0), [0, 1, 0, 0]);
+      const sealRim = new THREE.TorusGeometry(0.78, 0.05, 8, 40);
+      brass.add(sealRim, mat(0, 4.32, bz + 0.31), [2, 0, 0, 0]);
+      occlude(0, 4.32, bz + 0.3, 1.6, 1.6, 0.2);
+      // flanking engaged columns: red Numidian shafts, gilt caps
+      for (const cx of [-4.15, 4.15]) {
+        marble.add(cyl(0.34, 0.38, 5.4, 18), mat(cx, 0.55 + 2.7, bz + 0.45), [1, 1, 0, 0]);
+        marble.add(box(0.95, 0.22, 0.95), mat(cx, 0.55 + 0.11, bz + 0.45), [1, 1, 0, 0]);
+        brass.add(cyl(0.46, 0.36, 0.42, 18), mat(cx, 0.55 + 5.4 + 0.21, bz + 0.45), [3, 0, 0, 0]);
+        brass.add(box(1.05, 0.14, 1.05), mat(cx, 0.55 + 5.4 + 0.48, bz + 0.45), [4, 0, 0, 0]);
+        marble.add(box(1.1, 0.55, 1.1), mat(cx, 0.275, bz + 0.45), [0, 0, 0, 0]);
+        occlude(cx, 3.3, bz + 0.45, 1.0, 6.6, 1.0);
+      }
+      // entablature over the columns
+      marble.add(box(9.8, 0.5, 0.7), mat(0, 6.62, bz + 0.42), [2, 0, 0, 0]);
+      occlude(0, 6.62, bz + 0.42, 9.8, 0.5, 0.9);
+    }
+
+    // ── sconces (right wall) + two brass chandeliers ────────────────────────
+    const lampGlass = new Merger();
+    for (const sz of [-7.5, -2.5, 2.5, 7.5]) {
+      brass.add(box(0.09, 0.5, 0.16), mat(x1 - 0.30, 3.7, sz), [rng()*9, 0, 0, 0]);
+      brass.add(cyl(0.030, 0.030, 0.34, 8), mat(x1 - 0.42, 3.85, sz, 0, 0, 0.5), [rng()*9, 0, 0, 0]);
+      lampGlass.add(sph(0.095, 10, 8), mat(x1 - 0.52, 4.02, sz), [rng()*9, 0, 0, 0]);
+    }
+    this.fixtures = [];
+    for (const cz of [-4.6, 2.4]) {
+      const hy = 5.6;
+      brass.add(cyl(0.02, 0.02, y1 - hy - 0.5, 6), mat(0, (y1 + hy)/2 + 0.2, cz), [rng()*9, 0, 0, 0]);
+      const ring = new THREE.TorusGeometry(0.85, 0.055, 10, 28);
+      brass.add(ring, mat(0, hy, cz, Math.PI/2, 0, 0), [rng()*9, 0, 0, 0]);
+      brass.add(cyl(0.16, 0.24, 0.30, 12), mat(0, hy + 0.02, cz), [rng()*9, 0, 0, 0]);
+      for (let i = 0; i < 8; i++) {
+        const a = (i / 8) * Math.PI * 2;
+        const gx = Math.cos(a) * 0.85, gz = cz + Math.sin(a) * 0.85;
+        brass.add(cyl(0.02, 0.035, 0.14, 6), mat(gx, hy + 0.10, gz), [rng()*9, 0, 0, 0]);
+        lampGlass.add(sph(0.105, 10, 8), mat(gx, hy - 0.06, gz), [rng()*9, 0, 0, 0]);
+      }
+      this.fixtures.push([0, hy, cz]);
+    }
+    for (const sz of [-7.5, -2.5, 2.5, 7.5]) this.fixtures.push([x1 - 0.52, 4.02, sz, 0.4]);
+
+    // finalize static meshes
+    const meshes = [
+      [marble, MATS.marble], [wood, MATS.wood], [plaster, MATS.plaster],
+      [brass, MATS.brass], [mosaic, MATS.mosaic], [glass, MATS.glass],
+      [lampGlass, MATS.lamp],
+    ];
+    for (const [mg, m] of meshes) {
+      const mesh = new THREE.Mesh(mg.build(), m);
+      mesh.frustumCulled = false;
+      this.staticEnv.add(mesh);
+    }
+    this._roomMergers = { marble, wood, plaster, brass, mosaic };  // furniture appends below
+  }
+
+  _buildFurniture(MATS) {
+    const rng = mulberry32(977);
+    const wood = new Merger(), brass = new Merger(), leather = new Merger(),
+          paper = new Merger(), marble = new Merger();
+    const { z0 } = ROOM;
+
+    // ── dais: two marble steps + platform ───────────────────────────────────
+    const daisZ1 = -6.6;
+    marble.add(box(10.4, 0.55, (daisZ1 - z0)), mat(0, 0.275, (z0 + daisZ1)/2), [0, 0, 0, 0]);
+    occlude(0, 0.275, (z0 + daisZ1)/2, 10.4, 0.55, daisZ1 - z0);
+    marble.add(box(6.4, 0.18, 0.5), mat(0, 0.09, daisZ1 + 0.25), [0, 0, 0, 0]);
+    marble.add(box(6.4, 0.37, 0.5), mat(0, 0.185, daisZ1 - 0.25), [0, 0, 0, 0]);
+    occlude(0, 0.2, daisZ1, 6.4, 0.5, 1.2);
+
+    // ── THE BENCH — deliberately compressed: a 1-3 seat appellate bench.
+    //    A single centred jurist reads as intended; never a long empty row. ──
+    const benchW = 4.6, bz = -7.55, bTop = 2.32;
+    // main casework
+    wood.add(box(benchW, 1.77, 0.85), mat(0, 0.55 + 0.885, bz), [11, 0, 0, 0]);
+    occlude(0, 0.55 + 0.885, bz, benchW, 1.77, 0.85);
+    // wings angled toward counsel
+    for (const s of [-1, 1]) {
+      wood.add(box(1.5, 1.62, 0.72), mat(s * (benchW/2 + 0.62), 0.55 + 0.81, bz + 0.42, 0, -s * 0.5, 0), [12, 0, 0, 0]);
+      occlude(s * (benchW/2 + 0.62), 0.55 + 0.81, bz + 0.42, 1.6, 1.62, 0.9);
+    }
+    // top rail, nosing, base plinth, raised front panels
+    wood.add(box(benchW + 0.3, 0.09, 1.02), mat(0, bTop + 0.045, bz), [13, 0, 0, 0]);
+    moulding(wood, 0, bTop - 0.16, bz + 0.47, benchW, 'x', [[0, 0.07, 0.10], [-0.9, 0.05, 0.08]], [14, 0, 0, 0]);
+    wood.add(box(benchW, 0.16, 0.95), mat(0, 0.55 + 0.08, bz + 0.03), [15, 0, 0, 0]);
+    for (let i = 0; i < 3; i++) {
+      const c = -1.45 + i * 1.45;
+      wood.add(box(1.14, 1.05, 0.05), mat(c, 1.55, bz + 0.45), [16 + i, 0, 0, 0]);
+      wood.add(box(0.86, 0.78, 0.03), mat(c, 1.55, bz + 0.475), [19 + i, 0, 0, 0]);
+    }
+    // modesty top screen behind (judge emerges over it)
+    wood.add(box(benchW - 0.2, 0.30, 0.06), mat(0, bTop + 0.19, bz - 0.46), [22, 0, 0, 0]);
+    // gavel + block + books + papers on the bench top
+    wood.add(cyl(0.035, 0.035, 0.16, 8), mat(-0.55, bTop + 0.12, bz - 0.05, 0, 0, Math.PI/2), [23, 1, 0, 0]);
+    wood.add(cyl(0.012, 0.012, 0.17, 6), mat(-0.48, bTop + 0.10, bz + 0.06, 0, 0.5, 0), [23, 1, 0, 0]);
+    wood.add(cyl(0.09, 0.10, 0.025, 12), mat(-0.55, bTop + 0.055, bz - 0.02), [24, 1, 0, 0]);
+    for (let i = 0; i < 3; i++)
+      leather.add(box(0.34, 0.055, 0.24), mat(0.72 + i*0.02, bTop + 0.07 + i*0.055, bz - 0.12, 0, rng()*0.3 - 0.15, 0), [rng()*9, 2, 0, 0]);
+    for (let i = 0; i < 4; i++)
+      paper.add(box(0.30, 0.004, 0.40), mat(-0.1 + rng()*0.5, bTop + 0.048 + i*0.004, bz + 0.1, 0, rng()*0.5 - 0.25, 0), [rng()*9, 0, 0, 0]);
+
+    // high-back judge's chair silhouette behind the bench (mostly hidden)
+    leather.add(box(0.62, 0.85, 0.14), mat(0, bTop + 0.32, bz - 0.78, -0.06), [1, 0, 0, 0]);
+    wood.add(box(0.70, 0.06, 0.16), mat(0, bTop + 0.76, bz - 0.80, -0.06), [25, 0, 0, 0]);
+
+    // ── bench lamp: brass banker's lamp (emissive shade lives in the rig) ───
+    brass.add(cyl(0.055, 0.075, 0.03, 10), mat(1.25, bTop + 0.055, bz + 0.14), [1, 0, 0, 0]);
+    brass.add(cyl(0.016, 0.016, 0.30, 8), mat(1.25, bTop + 0.20, bz + 0.14), [1, 0, 0, 0]);
+
+    // ── clerk's desk (right, below bench) ───────────────────────────────────
+    wood.add(box(1.9, 0.95, 0.7), mat(3.0, 0.475, -5.9, 0, -0.18, 0), [26, 0, 0, 0]);
+    occlude(3.0, 0.475, -5.9, 1.95, 0.95, 0.8);
+    paper.add(box(0.30, 0.006, 0.40), mat(3.0, 0.958, -5.9, 0, 0.2, 0), [3, 0, 0, 0]);
+    this._chair(wood, leather, rng, 3.15, -6.55, Math.PI + 0.18);
+
+    // ── counsel tables + chairs + papers/books ──────────────────────────────
+    for (const s of [-1, 1]) {
+      const tx = s * 2.55, tz = -2.0;
+      wood.add(box(2.5, 0.075, 1.15), mat(tx, 0.76, tz), [30 + s, 0, 0, 0]);
+      moulding(wood, tx, 0.70, tz + 0.575, 2.5, 'x', [[0, 0.05, 0.04]], [31, 0, 0, 0]);
+      for (const [dx, dz] of [[-1.15, -0.48], [1.15, -0.48], [-1.15, 0.48], [1.15, 0.48]])
+        wood.add(box(0.09, 0.72, 0.09), mat(tx + dx, 0.38, tz + dz), [32, 0, 0, 0]);
+      occlude(tx, 0.5, tz, 2.5, 0.85, 1.15);
+      leather.add(box(2.3, 0.012, 0.95), mat(tx, 0.803, tz), [2, 0, 0, 0]);   // desk inlay
+      for (let i = 0; i < 3; i++)
+        paper.add(box(0.30, 0.005, 0.42), mat(tx - 0.6 + i*0.55 + rng()*0.1, 0.815 + i*0.003, tz + rng()*0.3 - 0.15, 0, rng()*0.6 - 0.3, 0), [rng()*9, 0, 0, 0]);
+      for (let i = 0; i < 2; i++)
+        leather.add(box(0.35, 0.06, 0.25), mat(tx + 0.75, 0.845 + i*0.062, tz - 0.3, 0, rng()*0.4 - 0.2, 0), [rng()*9, 2, 0, 0]);
+      this._chair(wood, leather, rng, tx - 0.55, tz + 1.05, Math.PI + (s>0 ? -0.1 : 0.1));
+      this._chair(wood, leather, rng, tx + 0.55, tz + 1.05, Math.PI + (s>0 ? -0.06 : 0.06));
+    }
+
+    // ── the lectern (the camera stands just behind it) ──────────────────────
+    {
+      const lz = 1.9;
+      wood.add(box(0.78, 1.12, 0.5), mat(0, 0.56, lz), [40, 0, 0, 0]);
+      wood.add(box(0.95, 0.07, 0.68), mat(0, 1.18, lz - 0.05, 0.30), [41, 0, 0, 0]);  // sloped top
+      moulding(wood, 0, 1.02, lz + 0.26, 0.8, 'x', [[0, 0.06, 0.05]], [42, 0, 0, 0]);
+      wood.add(box(0.9, 0.14, 0.62), mat(0, 0.07, lz), [43, 0, 0, 0]);
+      occlude(0, 0.6, lz, 0.95, 1.25, 0.7);
+      paper.add(box(0.30, 0.005, 0.42), mat(-0.12, 1.235, lz - 0.08, 0.30, 0.06, 0), [5, 0, 0, 0]);
+      paper.add(box(0.30, 0.005, 0.42), mat(0.14, 1.230, lz - 0.06, 0.30, -0.10, 0), [6, 0, 0, 0]);
+      brass.add(box(0.5, 0.025, 0.025), mat(0, 1.06, lz - 0.36, 0.3), [2, 0, 0, 0]); // paper stop
+      // lectern pendant above (source of the pool light)
+      brass.add(cyl(0.015, 0.015, 2.9, 6), mat(0, 4.95, lz), [2, 0, 0, 0]);
+      brass.add(cyl(0.14, 0.22, 0.20, 12), mat(0, 3.45, lz), [2, 0, 0, 0]);
+    }
+
+    // ── bar rail with turned balusters + gates (behind the advocate) ────────
+    {
+      const rz = 3.6, gap = 0.7;
+      const prof = [[0.012, 0], [0.05, 0.02], [0.024, 0.10], [0.045, 0.24], [0.020, 0.34],
+                    [0.048, 0.52], [0.016, 0.62], [0.038, 0.70], [0.012, 0.74]];
+      for (const s of [-1, 1]) {
+        const a0 = s > 0 ? gap : ROOM.x0 + 0.35, a1 = s > 0 ? ROOM.x1 - 0.35 : -gap;
+        const len = a1 - a0;
+        wood.add(box(len, 0.07, 0.14), mat((a0+a1)/2, 0.86, rz), [50, 0, 0, 0]);
+        wood.add(box(len, 0.05, 0.09), mat((a0+a1)/2, 0.10, rz), [51, 0, 0, 0]);
+        const n = Math.max(2, Math.floor(len / 0.34));
+        for (let i = 0; i <= n; i++)
+          wood.add(lathe(prof, 10), mat(a0 + (i/n)*len, 0.115, rz, 0, 0, 0, 1, 1.0, 1), [52, 1, 0, 0]);
+        occlude((a0+a1)/2, 0.45, rz, len, 0.9, 0.2);
+      }
+      // swing gates, slightly ajar
+      for (const s of [-1, 1]) {
+        wood.add(box(gap*0.92, 0.06, 0.10), mat(s*gap*0.52, 0.84, rz + s*0.12, 0, s*0.35, 0), [53, 0, 0, 0]);
+        for (let i = 0; i < 3; i++)
+          wood.add(lathe(prof, 8), mat(s*(0.18 + i*0.24), 0.10, rz + s*0.11 + (s>0? -1:1)*i*0.008, 0, s*0.35, 0, 0.8, 0.95, 0.8), [54, 1, 0, 0]);
+        brass.add(box(0.03, 0.05, 0.12), mat(s*gap, 0.84, rz), [3, 0, 0, 0]);
+      }
+    }
+
+    // ── gallery pews (behind the camera; they still shape the bake/bounce) ──
+    for (let r = 0; r < 3; r++) {
+      const pz = 5.3 + r * 1.5;
+      for (const s of [-1, 1]) {
+        const px = s * 3.4;
+        wood.add(box(5.4, 0.06, 0.42), mat(px, 0.46, pz), [60 + r, 1, 0, 0]);
+        wood.add(box(5.4, 0.75, 0.07), mat(px, 0.62, pz + 0.26, -0.13), [61 + r, 1, 0, 0]);
+        for (const ex of [-2.6, 0, 2.6])
+          wood.add(box(0.08, 0.46, 0.40), mat(px + ex, 0.23, pz), [62, 1, 0, 0]);
+        occlude(px, 0.6, pz + 0.1, 5.4, 1.2, 0.6);
+      }
+    }
+
+    // ── carpet runner up the centre aisle + well rug ────────────────────────
+    leather.add(box(2.1, 0.022, 8.6), mat(0, 0.012, 0.6), [0, 1, 0, 0]);
+    leather.add(box(5.6, 0.022, 2.6), mat(0, 0.012, -4.6), [1, 1, 0, 0]);
+
+    const meshes = [
+      [wood, MATS.wood], [brass, MATS.brass], [leather, MATS.leather],
+      [paper, MATS.paper], [marble, MATS.marble],
+    ];
+    for (const [mg, m] of meshes) {
+      const mesh = new THREE.Mesh(mg.build(), m);
+      mesh.frustumCulled = false;
+      this.staticEnv.add(mesh);
+    }
+  }
+
+  _chair(wood, leather, rng, x, z, ry) {
+    const m = (dx, dy, dz, g, data, rx = 0, rz2 = 0) => {
+      const mm = mat(0, 0, 0, rx, 0, rz2);
+      mm.premultiply(new THREE.Matrix4().makeTranslation(dx, dy, dz));
+      mm.premultiply(new THREE.Matrix4().makeRotationY(ry));
+      mm.premultiply(new THREE.Matrix4().makeTranslation(x, 0, z));
+      (data[1] === 9 ? leather : wood).add(g, mm, data);
+    };
+    for (const [lx, lz] of [[-0.21, -0.19], [0.21, -0.19], [-0.21, 0.19], [0.21, 0.19]])
+      m(lx, 0.23, lz, box(0.05, 0.46, 0.05), [70, 0, 0, 0]);
+    m(0, 0.48, 0, box(0.5, 0.07, 0.46), [71, 0, 0, 0]);
+    m(0, 0.51, 0, box(0.44, 0.055, 0.40), [1, 9, 0, 0]);      // 9 → leather pad
+    m(0, 0.86, -0.215, box(0.48, 0.66, 0.055), [72, 0, 0, 0], -0.1);
+    m(0, 0.86, -0.185, box(0.38, 0.5, 0.03), [2, 9, 0, 0], -0.1);
+    occlude(x, 0.6, z, 0.55, 1.2, 0.55);
+  }
+
+  // ═════════════════════════════════════════════════════════════════════════
+  //  DYNAMIC RIG — judge figure, reactive lamp glass, lectern pool cone.
+  //  Lives in its own group so a future splat environment can replace the
+  //  static group while this rig composites over it.
+  // ═════════════════════════════════════════════════════════════════════════
+  _buildRig(MATS) {
+    const robe = new Merger(), collar = new Merger();
+    const bz = -7.55, seatY = 2.32;
+    // The figure is generic and faceless — but the silhouette must read as a
+    // robed jurist: sloped shoulders, standing collar, head bowed to papers.
+    const shoulderProfile = [
+      [0.001, 0.0], [0.34, 0.02], [0.42, 0.10], [0.44, 0.22], [0.40, 0.38],
+      [0.30, 0.52], [0.17, 0.62], [0.105, 0.68], [0.09, 0.74], [0.001, 0.76],
+    ];
+    robe.add(lathe(shoulderProfile, 20), mat(0, seatY - 0.30, bz - 0.72, 0.10, 0, 0, 1.15, 1.25, 0.9), [0, 0, 0, 0]);
+    // upper arms sloping forward onto the bench
+    robe.add(cyl(0.085, 0.115, 0.62, 10), mat(-0.315, seatY + 0.13, bz - 0.47, 1.15, 0.0, 0.35), [0, 0, 0, 0]);
+    robe.add(cyl(0.085, 0.115, 0.62, 10), mat(0.315, seatY + 0.13, bz - 0.47, 1.15, 0.0, -0.35), [0, 0, 0, 0]);
+    // head: featureless, slightly bowed
+    robe.add(sph(0.117, 14, 12), mat(0, seatY + 0.615, bz - 0.66, 0.16, 0, 0, 1, 1.12, 1.04), [0, 0, 0, 0]);
+    // standing collar + white tabs — the giveaway silhouette cues
+    robe.add(cyl(0.13, 0.15, 0.09, 12), mat(0, seatY + 0.475, bz - 0.665), [0, 0, 0, 0]);
+    collar.add(box(0.052, 0.11, 0.012), mat(-0.032, seatY + 0.40, bz - 0.535, 0.18, 0, 0.10), [0, 1, 0, 0]);
+    collar.add(box(0.052, 0.11, 0.012), mat(0.032, seatY + 0.40, bz - 0.535, 0.18, 0, -0.10), [0, 1, 0, 0]);
+
+    this.judge = new THREE.Group();
+    const robeMesh = new THREE.Mesh(robe.build(), MATS.robe);
+    const collarMesh = new THREE.Mesh(collar.build(), MATS.paper);
+    robeMesh.frustumCulled = collarMesh.frustumCulled = false;
+    this.judge.add(robeMesh, collarMesh);
+    this.judge.position.y = -1.05;
+    this.rig.add(this.judge);
+
+    // amp-reactive bench lamp shade (emissive) — over the brass base built above
+    const lampG = new Merger();
+    const shadeProfile = [[0.001, 0], [0.16, 0.0], [0.19, 0.05], [0.115, 0.13], [0.06, 0.14]];
+    lampG.add(lathe(shadeProfile, 16), mat(1.25, seatY + 0.34, bz + 0.14), [0, 1, 0, 0]);
+    // lectern pendant shade
+    lampG.add(lathe([[0.001, 0], [0.13, 0.0], [0.20, 0.09], [0.21, 0.16]], 14), mat(0, 3.36, 1.9), [0, 2, 0, 0]);
+    const lampMesh = new THREE.Mesh(lampG.build(), MATS.lamp);
+    lampMesh.frustumCulled = false;
+    this.rig.add(lampMesh);
+
+    // lectern pool-light cone (soft additive volume, visible when lit)
+    const coneGeo = new THREE.CylinderGeometry(0.16, 0.85, 2.30, 20, 1, true);
+    const coneMat = new THREE.ShaderMaterial({
+      glslVersion: THREE.GLSL3,
+      vertexShader: /* glsl */`
+        out vec2 vUvC; out vec3 vWpC;
+        void main(){ vUvC = uv; vWpC = (modelMatrix*vec4(position,1.0)).xyz;
+          gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.0); }`,
+      fragmentShader: /* glsl */`
+        precision highp float;
+        uniform float uLectI; uniform vec3 uCamPos;
+        in vec2 vUvC; in vec3 vWpC; out vec4 outColor;
+        void main(){
+          float a = smoothstep(0.0, 0.35, vUvC.y) * smoothstep(1.0, 0.72, vUvC.y);
+          outColor = vec4(vec3(1.0, 0.82, 0.55) * uLectI * 0.28 * a, 1.0);
+        }`,
+      uniforms: { uLectI: this.G ? this.G.uLectI : { value: 0 }, uCamPos: { value: new THREE.Vector3() } },
+      transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+    });
+    this._coneMat = coneMat;
+    const cone = new THREE.Mesh(coneGeo, coneMat);
+    cone.position.set(0, 2.25, 1.9);
+    cone.frustumCulled = false;
+    this.rig.add(cone);
+  }
+
+  _buildAtmosphere(mkMat) {
+    // ── volumetric shafts: one prism per window, extruded along the sun ─────
+    const shaftMat = mkMat(FRAG_SHAFT, {}, {
+      vert: VERT_SHAFT,
+      mat: { transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide },
+    });
+    const sm = new Merger();
+    const rng = mulberry32(31337);
+    for (const wnd of WINDOWS) {
+      const pts = archPoints(wnd.w, wnd.sill + 0.15, wnd.spring, wnd.r * 0.92, 5);
+      const L = 10.5;                                     // beam length
+      const d = SUN_TO_SCENE;
+      const pos = [], uvA = [], dataA = [];
+      const n = pts.length;
+      for (let i = 0; i < n; i++) {
+        const a = pts[i], b = pts[(i + 1) % n];
+        const quad = [
+          [a, 0], [b, 0], [b, 1],
+          [a, 0], [b, 1], [a, 1],
+        ];
+        for (const [[py, pyy], t] of quad) {
+          const x = ROOM.x0 + 0.1 + d.x * L * t;
+          const y = pyy + d.y * L * t;
+          const z = wnd.z + py + d.z * L * t;
+          pos.push(x, y, z);
+          uvA.push((i / n + (t * 0)) % 1, t);
+          dataA.push(0, 0, 1, 0);
+        }
+      }
+      // NOTE: cross-section u is faked per-edge; rim fade uses aData.z instead
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+      g.setAttribute('uv', new THREE.Float32BufferAttribute(uvA, 2));
+      g.setAttribute('normal', new THREE.Float32BufferAttribute(new Float32Array(pos.length), 3));
+      g.setAttribute('aData', new THREE.Float32BufferAttribute(dataA, 4));
+      sm.add(g, mat(0, 0, 0), [0, 0, 1, 0]);
+    }
+    const shaftGeo = sm.build();
+    // rebuild uv.y as "along the beam" & aData.z as rim weight from cross-section
+    {
+      const p = shaftGeo.attributes.position, u = shaftGeo.attributes.uv, dt = shaftGeo.attributes.aData;
+      for (let i = 0; i < p.count; i++) {
+        const x = p.getX(i);
+        const t = (x - (ROOM.x0 + 0.1)) / (SUN_TO_SCENE.x * 10.5);
+        u.setY(i, t);
+        const y0 = p.getY(i) - SUN_TO_SCENE.y * 10.5 * t;
+        // rim weight: distance of the source-plane point from window centre line
+        let wZ = 0;
+        for (const wnd of WINDOWS) { if (Math.abs((p.getZ(i) - SUN_TO_SCENE.z*10.5*t) - wnd.z) < wnd.w) { wZ = 1 - Math.abs((p.getZ(i) - SUN_TO_SCENE.z*10.5*t) - wnd.z) / wnd.w; break; } }
+        const hMid = 1 - Math.abs((y0 - 3.4) / 2.6);
+        dt.setZ(i, Math.max(0, Math.min(1, wZ * 1.6)) * Math.max(0.2, hMid));
+        u.setX(i, wZ);
+      }
+      u.needsUpdate = dt.needsUpdate = true;
+    }
+    const shafts = new THREE.Mesh(shaftGeo, shaftMat);
+    shafts.frustumCulled = false;
+    shafts.renderOrder = 5;
+    this.staticEnv.add(shafts);
+
+    // ── dust motes inside the beams ─────────────────────────────────────────
+    const N = 900;
+    const mp = new Float32Array(N * 3), ms = new Float32Array(N);
+    for (let i = 0; i < N; i++) {
+      const wnd = WINDOWS[(rng() * WINDOWS.length) | 0];
+      const t = rng();
+      const spread = 0.25 + t * 0.75;
+      mp[i*3]   = ROOM.x0 + 0.2 + SUN_TO_SCENE.x * 10.0 * t + (rng()-0.5) * 0.9 * spread;
+      mp[i*3+1] = (wnd.sill + rng() * (wnd.spring + wnd.r - wnd.sill)) + SUN_TO_SCENE.y * 10.0 * t + (rng()-0.5)*0.5;
+      mp[i*3+2] = wnd.z + (rng()-0.5) * wnd.w * 0.9 + SUN_TO_SCENE.z * 10.0 * t;
+      ms[i] = rng();
+    }
+    const mg = new THREE.BufferGeometry();
+    mg.setAttribute('position', new THREE.BufferAttribute(mp, 3));
+    mg.setAttribute('aSeed', new THREE.BufferAttribute(ms, 1));
+    this._moteMat = new THREE.ShaderMaterial({
+      glslVersion: THREE.GLSL3, vertexShader: VERT_MOTE, fragmentShader: FRAG_MOTE,
+      uniforms: { uTime2: { value: 0 }, uPix: { value: innerHeight * this.renderer.getPixelRatio() * 0.5 }, uSunCol: this.G.uSunCol },
+      transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
+    });
+    const motes = new THREE.Points(mg, this._moteMat);
+    motes.frustumCulled = false;
+    motes.renderOrder = 6;
+    this.staticEnv.add(motes);
+  }
+
+  // ═════════════════════════════════════════════════════════════════════════
+  //  LIGHT BAKE — voxelise the room, then DDA-march rays per light-volume
+  //  cell:  R sun-beam visibility · G ambient occlusion · B fixture glow ·
+  //  A window fill.  Runs once at load; only the two dynamic lights move.
+  // ═════════════════════════════════════════════════════════════════════════
+  async _bakeLightVolume(setLoad) {
+    const { x0, x1, y0, y1, z0, z1 } = ROOM;
+    // occupancy grid
+    const OX = 120, OY = 72, OZ = 184;
+    const osx = (x1 - x0) / OX, osy = (y1 - y0) / OY, osz = (z1 - z0) / OZ;
+    const occ = new Uint8Array(OX * OY * OZ);
+    for (const [ax0, ay0, az0, ax1, ay1, az1] of occluders) {
+      const i0 = Math.max(0, Math.floor((ax0 - x0) / osx)), i1 = Math.min(OX - 1, Math.ceil((ax1 - x0) / osx) - 1);
+      const j0 = Math.max(0, Math.floor((ay0 - y0) / osy)), j1 = Math.min(OY - 1, Math.ceil((ay1 - y0) / osy) - 1);
+      const k0 = Math.max(0, Math.floor((az0 - z0) / osz)), k1 = Math.min(OZ - 1, Math.ceil((az1 - z0) / osz) - 1);
+      for (let j = j0; j <= j1; j++) for (let k = k0; k <= k1; k++) {
+        const row = j * OX * OZ + k * OX;
+        for (let i = i0; i <= i1; i++) occ[row + i] = 1;
+      }
+    }
+    const occAt = (i, j, k) => (i < 0 || j < 0 || k < 0 || i >= OX || j >= OY || k >= OZ) ? -1 : occ[j * OX * OZ + k * OX + i];
+    // march a ray in world space through the occupancy grid; returns 1 if it
+    // escapes the room (i.e. reaches light through a window / open bound)
+    function march(px, py, pz, dx, dy, dz, maxDist) {
+      let t = 0;
+      const step = Math.min(osx, osy, osz) * 0.9;
+      while (t < maxDist) {
+        t += step;
+        const wx = px + dx * t, wy = py + dy * t, wz = pz + dz * t;
+        const i = Math.floor((wx - x0) / osx), j = Math.floor((wy - y0) / osy), k = Math.floor((wz - z0) / osz);
+        const o = occAt(i, j, k);
+        if (o === -1) return { hit: 0, t };
+        if (o === 1) return { hit: 1, t };
+      }
+      return { hit: 0, t: maxDist };
+    }
+
+    // light volume
+    const VX = 56, VY = 30, VZ = 88;
+    const vsx = (x1 - x0) / VX, vsy = (y1 - y0) / VY, vsz = (z1 - z0) / VZ;
+    const vol = new Uint8Array(VX * VY * VZ * 4);
+    const solid = new Uint8Array(VX * VY * VZ);
+    const rng = mulberry32(20260705);
+    const S = SUN_TO_SCENE;
+    // precompute window sample points for the A channel
+    const winSamples = [];
+    for (const wnd of WINDOWS) for (let i = 0; i < 6; i++)
+      winSamples.push([x0 + 0.02, wnd.sill + (i + 0.5)/6 * (wnd.spring + wnd.r - wnd.sill), wnd.z + (rng() - 0.5) * wnd.w * 0.8]);
+    const fixtures = this.fixtures.map(f => [f[0], f[1], f[2], f[3] ?? 1.0]);
+    // AO ray set: fixed low-discrepancy directions, up-biased sphere
+    const aoDirs = [];
+    for (let i = 0; i < 18; i++) {
+      const u = (i + 0.5) / 18, v = ((i * 7) % 18 + 0.5) / 18;
+      const th = Math.acos(1 - 1.35 * u);          // biased toward up
+      const ph = v * Math.PI * 2;
+      aoDirs.push([Math.sin(th) * Math.cos(ph), Math.cos(th), Math.sin(th) * Math.sin(ph)]);
+    }
+
+    for (let j = 0; j < VY; j++) {
+      for (let k = 0; k < VZ; k++) {
+        for (let i = 0; i < VX; i++) {
+          const idx = j * VX * VZ + k * VX + i;
+          const wx = x0 + (i + 0.5) * vsx, wy = y0 + (j + 0.5) * vsy, wz = z0 + (k + 0.5) * vsz;
+          const oi = Math.floor((wx - x0) / osx), oj = Math.floor((wy - y0) / osy), ok = Math.floor((wz - z0) / osz);
+          if (occAt(oi, oj, ok) === 1) { solid[idx] = 1; continue; }
+          // ── sun beam: jittered cone toward the sun ──
+          let sun = 0;
+          for (let r = 0; r < 4; r++) {
+            const jx = (rng() - 0.5) * 0.055, jy = (rng() - 0.5) * 0.055, jz = (rng() - 0.5) * 0.055;
+            const dl = 1 / Math.hypot(-S.x + jx, -S.y + jy, -S.z + jz);
+            const m = march(wx, wy, wz, (-S.x + jx) * dl, (-S.y + jy) * dl, (-S.z + jz) * dl, 26);
+            if (!m.hit) sun += 0.25;
+          }
+          // ── window fill: rays toward sample points on the glass ──
+          let win = 0;
+          for (let r = 0; r < 6; r++) {
+            const ws = winSamples[(rng() * winSamples.length) | 0];
+            const ddx = ws[0] - wx, ddy = ws[1] - wy, ddz = ws[2] - wz;
+            const dist = Math.hypot(ddx, ddy, ddz);
+            const m = march(wx, wy, wz, ddx / dist, ddy / dist, ddz / dist, dist - 0.15);
+            if (!m.hit) win += (1 / 6) * Math.min(1, 3.2 / dist + 0.35);
+          }
+          // ── ambient occlusion: up-biased sphere, distance-weighted ──
+          let ao = 0;
+          for (const d of aoDirs) {
+            const m = march(wx, wy, wz, d[0], d[1], d[2], 3.4);
+            ao += m.hit ? Math.min(1, m.t / 3.4) : 1;
+          }
+          ao /= aoDirs.length;
+          // ── fixtures: shadow ray + inverse square ──
+          let fx = 0;
+          for (const f of fixtures) {
+            const ddx = f[0] - wx, ddy = f[1] - wy, ddz = f[2] - wz;
+            const dist = Math.hypot(ddx, ddy, ddz);
+            if (dist > 14) continue;
+            const m = march(wx, wy, wz, ddx / dist, ddy / dist, ddz / dist, dist - 0.2);
+            if (!m.hit) fx += f[3] * 2.1 / (1.5 + dist * dist * 0.55);
+          }
+          vol[idx * 4]     = Math.min(255, sun * 255) | 0;
+          vol[idx * 4 + 1] = Math.min(255, ao * 255) | 0;
+          vol[idx * 4 + 2] = Math.min(255, fx * 255) | 0;
+          vol[idx * 4 + 3] = Math.min(255, win * 255) | 0;
+        }
+      }
+      if ((j & 3) === 3) await setLoad(0.18 + 0.72 * (j / VY), 'baking the light…');
+    }
+    // dilate lighting into solid cells so surface samples never read black
+    for (let pass = 0; pass < 2; pass++) {
+      const src = vol.slice();
+      for (let j = 0; j < VY; j++) for (let k = 0; k < VZ; k++) for (let i = 0; i < VX; i++) {
+        const idx = j * VX * VZ + k * VX + i;
+        if (!solid[idx]) continue;
+        let n = 0; const acc = [0, 0, 0, 0];
+        for (const [di, dj, dk] of [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]]) {
+          const ii = i + di, jj = j + dj, kk = k + dk;
+          if (ii < 0 || jj < 0 || kk < 0 || ii >= VX || jj >= VY || kk >= VZ) continue;
+          const nIdx = jj * VX * VZ + kk * VX + ii;
+          if (solid[nIdx] && pass === 0) continue;
+          const any = src[nIdx*4] + src[nIdx*4+1] + src[nIdx*4+2] + src[nIdx*4+3];
+          if (any === 0) continue;
+          n++;
+          for (let c = 0; c < 4; c++) acc[c] += src[nIdx * 4 + c];
+        }
+        if (n > 0) for (let c = 0; c < 4; c++) vol[idx * 4 + c] = (acc[c] / n) | 0;
+      }
+    }
+    const tex = new THREE.Data3DTexture(vol, VX, VZ, VY);
+    // NOTE: Data3DTexture(w,h,d) — our indexing is x fastest, then z, then y,
+    // so the texture dims are (VX, VZ, VY) and lookups swizzle to (x, z, y).
+    tex.format = THREE.RGBAFormat;
+    tex.type = THREE.UnsignedByteType;
+    tex.minFilter = tex.magFilter = THREE.LinearFilter;
+    tex.unpackAlignment = 1;
+    tex.needsUpdate = true;
+    this.G.uVol.value = tex;
+    // patch the sampler swizzle into COMMON at runtime: cheaper to swizzle in
+    // shader — bakeAt maps (x,y,z)→(x,z,y):
+    for (const m of Object.values(this.MATS)) {
+      m.fragmentShader = m.fragmentShader.replace(
+        'return texture(uVol, clamp(sp, vec3(0.02), vec3(0.98)));',
+        'sp = clamp(sp, vec3(0.02), vec3(0.98)); return texture(uVol, vec3(sp.x, sp.z, sp.y));');
+      m.needsUpdate = true;
+    }
+  }
+
+  // ═════════════════════════════════════════════════════════════════════════
+  //  FRAME LOOP — all cues derive from (state, timeInState, amp) only.
+  // ═════════════════════════════════════════════════════════════════════════
+  start() {
+    this.stateEnteredAt = this.clock.now();
+    let last = this.clock.now();
+    const step = () => {
+      requestAnimationFrame(step);
+      const now = this.clock.now();
+      const dt = this._frozen ? 1 / 60 : Math.min(0.1, Math.max(0.0001, now - last));
+      last = now;
+      this._update(now, dt);
+      this._render(now);
+    };
+    requestAnimationFrame(step);
+  }
+  freezeForPose(state, amp) {
+    this._frozen = true;
+    this._enter(state);
+    this.setAmp(amp);
+    const t = deriveTargets(this.state);
+    Object.assign(this.cur, t);
+    this.exposure = t.exposure;
+  }
+  _update(now, dt) {
+    const t = deriveTargets(this.state);
+    if (this._frozen) Object.assign(this.cur, t);
+    else {
+      const kFast = 1 - Math.exp(-dt * 5.2), kSlow = 1 - Math.exp(-dt * 1.8);
+      this.cur.house += (t.house - this.cur.house) * kFast;
+      this.cur.lect  += (t.lect  - this.cur.lect ) * kFast;
+      this.cur.judgeY += (t.judgeY - this.cur.judgeY) * kSlow;
+      this.cur.judgeLean += (t.judgeLean - this.cur.judgeLean) * kSlow;
+      this.cur.lampFloor += (t.lampFloor - this.cur.lampFloor) * kFast;
+      this.exposure += (t.exposure - this.exposure) * kSlow * 0.6;
+    }
+    // bench lamp: during COURT_SPEAKING it IS the amp (barge-in: amp 0 → 0
+    // this very frame, no easing).  Outside that state only a faint floor.
+    let lamp = this.cur.lampFloor;
+    if (this.state === 'COURT_SPEAKING') {
+      const shimmer = 0.9 + 0.1 * Math.sin(now * 21.0) * Math.sin(now * 13.7);
+      lamp = this.amp <= 0.001 ? 0 : this.amp * shimmer;
+    }
+    this.G.uHouse.value = this.cur.house;
+    this.G.uLampI.value = lamp;
+    this.G.uLectI.value = this.cur.lect;
+    this.G.uTime.value = now;
+    if (this._moteMat) this._moteMat.uniforms.uTime2.value = now;
+    if (this.judge) {
+      this.judge.position.y = this.cur.judgeY;
+      this.judge.rotation.x = this.cur.judgeLean * 0.4;
+    }
+    if (this._coneMat) this._coneMat.uniforms.uLectI.value = this.cur.lect;
+  }
+  _render(now) {
+    const r = this.renderer;
+    const t0 = performance.now();
+    r.setRenderTarget(this.sceneRT);
+    r.render(this.scene, this.camera);
+    // adaptive exposure: probe average luminance every 14 frames (live mode)
+    if (!this._frozen && (this._frame % 14) === 0) {
+      this.postQuad.material = this.lumMat;
+      r.setRenderTarget(this.lumRT);
+      r.render(this.postScene, this.postCam);
+      r.readRenderTargetPixels(this.lumRT, 0, 0, 1, 1, this._lumPix);
+      const l = this._lumPix[0] / 255;
+      const key = 0.30;
+      this._expTarget = Math.min(2.2, Math.max(0.55, key / Math.max(0.04, l / Math.max(0.001, 1 - l)) )) ;
+      this.postQuad.material = this.postMat;
+    }
+    if (!this._frozen && this._expTarget) this.exposure += (this._expTarget * deriveTargets(this.state).exposure - this.exposure) * 0.03;
+    this.postMat.uniforms.uExposure.value = this.exposure;
+    this.postMat.uniforms.uT.value = this._frozen ? 0.5 : now;
+    r.setRenderTarget(null);
+    r.render(this.postScene, this.postCam);
+    this._frame++;
+    const ft = performance.now() - t0;
+    this._fpsAcc += ft; this._fpsN++;
+    if (this._fpsN >= 40) { this.fps = Math.round(1000 / (this._fpsAcc / this._fpsN)); this._fpsAcc = 0; this._fpsN = 0; }
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  BOOT + DEMO WIRING
+// ═══════════════════════════════════════════════════════════════════════════
+(async () => {
+  const clock = POSE ? FrozenClock(POSE_TIME) : RealClock();
+  const ps = new PresenceScene({ container: document.getElementById('stage'), clock });
+  window.presence = ps;
+  window.__diag = () => ({
+    state: ps.state, amp: ps.amp, bakeMs: ps.bakeMs, fps: ps.fps,
+    calls: ps.renderer?.info.render.calls, tris: ps.renderer?.info.render.triangles,
+    programs: ps.renderer?.info.programs?.length, exposure: +ps.exposure.toFixed(3),
+  });
+  await ps.init();
+
+  if (POSE) {
+    document.getElementById('ui').classList.add('hidden');
+    document.getElementById('transcript').classList.add('hidden');
+    ps.freezeForPose(POSE.toUpperCase(), POSE_AMP);
+    ps.start();
+    return;
+  }
+
+  ps.start();
+  ps.pushTranscript('Oyez, oyez — the court is now in session.');
+
+  // controls
+  const ampEl = document.getElementById('amp');
+  ampEl.addEventListener('input', () => ps.setAmp(ampEl.value / 100));
+  document.querySelectorAll('#ui button[data-state]').forEach(b =>
+    b.addEventListener('click', () => { simCancel(); ps.setState(b.dataset.state); }));
+  document.querySelector('#ui button[data-state="IDLE"]').classList.add('active');
+
+  // "simulate hearing": walks the full ceremony via the reducer with an
+  // animated speech-envelope amp (including one barge-in moment).
+  let simTimer = null, simAmpRaf = null;
+  function simCancel() {
+    if (simTimer) { clearTimeout(simTimer); simTimer = null; }
+    if (simAmpRaf) { cancelAnimationFrame(simAmpRaf); simAmpRaf = null; ps.setAmp(ampEl.value / 100); }
+  }
+  document.getElementById('simulate').addEventListener('click', () => {
+    simCancel();
+    const seq = [
+      [0,    () => { ps.dispatch({ type: 'RESET' }); ps.pushTranscript('— clerk prepares the calendar —'); }],
+      [1600, () => { ps.dispatch({ type: 'CALL_TO_ORDER' }); ps.pushTranscript('All rise.'); }],
+      [4600, () => { ps.dispatch({ type: 'JUDGE_SEATED' }); ps.pushTranscript('Please be seated. Counsel, you may proceed.'); }],
+      [8600, () => { ps.dispatch({ type: 'COURT_SPEAKS' }); ps.pushTranscript('The court has a preliminary question.'); speak(6800, true); }],
+      [16000, () => { ps.dispatch({ type: 'YIELD_FLOOR' }); ps.pushTranscript('Counsel continues the argument.'); }],
+      [20500, () => { ps.dispatch({ type: 'COURT_SPEAKS' }); ps.pushTranscript('Thank you, counsel. The matter is submitted.'); speak(4200, false); }],
+      [25500, () => { ps.dispatch({ type: 'ADJOURN' }); ps.pushTranscript('Court stands adjourned.'); }],
+      [30000, () => { ps.dispatch({ type: 'RESET' }); }],
+    ];
+    const t0 = performance.now();
+    let i = 0;
+    const tickSeq = () => {
+      while (i < seq.length && performance.now() - t0 >= seq[i][0]) seq[i++][1]();
+      if (i < seq.length) simTimer = setTimeout(tickSeq, 60);
+    };
+    tickSeq();
+    function speak(durMs, bargeIn) {
+      const s0 = performance.now();
+      const env = () => {
+        const t = (performance.now() - s0) / 1000;
+        if (t * 1000 >= durMs) { ps.setAmp(0); return; }
+        if (bargeIn && t > 3.2 && t < 3.75) { ps.setAmp(0); }   // counsel interjects — instant kill
+        else {
+          const syll = Math.max(0, Math.sin(t * 9.1) * 0.5 + 0.5) * Math.max(0, Math.sin(t * 2.3 + 1.2) * 0.5 + 0.6);
+          ps.setAmp(Math.min(1, 0.18 + syll * 0.85));
+        }
+        simAmpRaf = requestAnimationFrame(env);
+      };
+      env();
+    }
+  });
+})();
+</script>
+</body>
+</html>
