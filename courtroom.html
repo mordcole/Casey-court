@@ -621,7 +621,8 @@ void main(){
 }
 `;
 
-// ── judge's robe: near-black wool, velvet fresnel rim ───────────────────────
+// ── figure cloth: judge's velvet robe (variant 0) / counsel's dark worsted
+//    suit (variant 1) — both faceless-generic, silhouette-first ─────────────
 const FRAG_ROBE = /* glsl */`
 ${'${COMMON}'}
 in vec3 vWp; in vec3 vN; in vec2 vUv; in vec4 vData;
@@ -630,11 +631,16 @@ void main(){
   vec3 N = normalize(vN);
   vec3 V = normalize(uCamPos - vWp);
   float folds = fbm(vec2(vUv.x*9.0, vUv.y*3.5));
-  vec3 base = ${C3(P.robeA)} * (0.8 + 0.5*folds);
+  // variant 0: judge's black robe · 1: counsel suit · 2: head-in-shadow tone
+  // (slightly lighter so the bowed head separates from the black chair —
+  //  still a featureless ovoid, no facial detail of any kind)
+  vec3 cloth = vData.y < 0.5 ? ${C3(P.robeA)} : (vData.y < 1.5 ? ${C3(0x20242c)} : ${C3(0x4a4448)});
+  vec3 base = cloth * (0.8 + 0.5*folds);
   // velvet: strong grazing retro-reflection picks the silhouette out of shadow
   float rim = pow(1.0 - max(dot(N, V), 0.0), 3.0);
   vec3 col = shade(base, N, vWp, 0.10, 0.9, 0.9);
-  col += ${C3(0x37364a)} * rim * (0.14 + 0.5*bakeAt(vWp,N).a);
+  vec3 rimC = vData.y < 0.5 ? ${C3(0x37364a)} : (vData.y < 1.5 ? ${C3(0x2e3640)} : ${C3(0x5a5258)});
+  col += rimC * rim * (0.14 + 0.5*bakeAt(vWp,N).a) * (vData.y < 0.5 ? 1.0 : (vData.y < 1.5 ? 0.55 : 1.3));
   outColor = vec4(col, 1.0);
 }
 `;
@@ -890,12 +896,12 @@ function ceremonyReduce(state, event) {
 // gates the bench lamp during COURT_SPEAKING — amp 0 kills it instantly).
 function deriveTargets(state) {
   switch (state) {
-    case 'IDLE':           return { judgeY: -1.05, judgeLean: 0.00, house: 0.42, lect: 0.0, lampFloor: 0.0, exposure: 1.16 };
-    case 'RISING':         return { judgeY:  0.17, judgeLean: 0.00, house: 0.95, lect: 0.0, lampFloor: 0.04, exposure: 1.06 };
-    case 'AWAITING':       return { judgeY:  0.00, judgeLean: 0.04, house: 0.88, lect: 1.0, lampFloor: 0.05, exposure: 1.04 };
-    case 'COURT_SPEAKING': return { judgeY:  0.00, judgeLean: 0.10, house: 0.70, lect: 0.32, lampFloor: 0.0, exposure: 1.02 };
-    case 'ADJOURNED':      return { judgeY: -1.05, judgeLean: 0.00, house: 0.16, lect: 0.0, lampFloor: 0.0, exposure: 1.28 };
-    default:               return { judgeY: -1.05, judgeLean: 0.00, house: 0.42, lect: 0.0, lampFloor: 0.0, exposure: 1.16 };
+    case 'IDLE':           return { judgeY: -1.05, judgeLean: 0.00, counselY: -1.40, house: 0.42, lect: 0.0, lampFloor: 0.0, exposure: 1.16 };
+    case 'RISING':         return { judgeY:  0.17, judgeLean: 0.00, counselY:  0.00, house: 0.95, lect: 0.0, lampFloor: 0.04, exposure: 1.06 };
+    case 'AWAITING':       return { judgeY:  0.00, judgeLean: 0.04, counselY:  0.00, house: 0.88, lect: 1.0, lampFloor: 0.05, exposure: 1.04 };
+    case 'COURT_SPEAKING': return { judgeY:  0.00, judgeLean: 0.10, counselY:  0.00, house: 0.70, lect: 0.32, lampFloor: 0.0, exposure: 1.02 };
+    case 'ADJOURNED':      return { judgeY: -1.05, judgeLean: 0.00, counselY: -1.40, house: 0.16, lect: 0.0, lampFloor: 0.0, exposure: 1.28 };
+    default:               return { judgeY: -1.05, judgeLean: 0.00, counselY: -1.40, house: 0.42, lect: 0.0, lampFloor: 0.0, exposure: 1.16 };
   }
 }
 
@@ -1522,40 +1528,103 @@ class PresenceScene {
   //  static group while this rig composites over it.
   // ═════════════════════════════════════════════════════════════════════════
   _buildRig(MATS) {
-    const robe = new Merger(), collar = new Merger();
     const bz = -7.55, seatY = 2.32;
-    // The figure is generic and faceless — but the silhouette must read as a
-    // robed jurist: sloped shoulders, standing collar, head bowed to papers.
-    const shoulderProfile = [
-      [0.001, 0.0], [0.34, 0.02], [0.42, 0.10], [0.44, 0.22], [0.40, 0.38],
-      [0.30, 0.52], [0.17, 0.62], [0.105, 0.68], [0.09, 0.74], [0.001, 0.76],
+    const jz = bz - 0.68;      // judge's spine line, just in front of the chair
+    // ── THE JUDGE — generic and FACELESS, but the silhouette must read as a
+    //    seated robed appellate jurist: distinct bowed head over a standing
+    //    collar, sloped robed shoulders, torso tapering to the bench, arms
+    //    reaching forward to rest on the bench top.  No facial geometry. ────
+    const robe = new Merger(), headM = new Merger(), collar = new Merger();
+    // robed torso: full drape from the seat, chest swell, shoulder shelf
+    const torsoProfile = [
+      [0.001, 0.00], [0.40, 0.02], [0.43, 0.16], [0.39, 0.42], [0.345, 0.66],
+      [0.315, 0.82], [0.30, 0.90], [0.175, 1.00], [0.125, 1.05], [0.001, 1.08],
     ];
-    robe.add(lathe(shoulderProfile, 20), mat(0, seatY - 0.30, bz - 0.72, 0.10, 0, 0, 1.15, 1.25, 0.9), [0, 0, 0, 0]);
-    // upper arms sloping forward onto the bench
-    robe.add(cyl(0.085, 0.115, 0.62, 10), mat(-0.315, seatY + 0.13, bz - 0.47, 1.15, 0.0, 0.35), [0, 0, 0, 0]);
-    robe.add(cyl(0.085, 0.115, 0.62, 10), mat(0.315, seatY + 0.13, bz - 0.47, 1.15, 0.0, -0.35), [0, 0, 0, 0]);
-    // head: featureless, slightly bowed
-    robe.add(sph(0.117, 14, 12), mat(0, seatY + 0.615, bz - 0.66, 0.16, 0, 0, 1, 1.12, 1.04), [0, 0, 0, 0]);
-    // standing collar + white tabs — the giveaway silhouette cues
-    robe.add(cyl(0.13, 0.15, 0.09, 12), mat(0, seatY + 0.475, bz - 0.665), [0, 0, 0, 0]);
-    collar.add(box(0.052, 0.11, 0.012), mat(-0.032, seatY + 0.40, bz - 0.535, 0.18, 0, 0.10), [0, 1, 0, 0]);
-    collar.add(box(0.052, 0.11, 0.012), mat(0.032, seatY + 0.40, bz - 0.535, 0.18, 0, -0.10), [0, 1, 0, 0]);
+    robe.add(lathe(torsoProfile, 22), mat(0, 1.96, jz, 0.06, 0, 0, 1.04, 1.0, 0.80), [0, 0, 0, 0]);
+    // sloped shoulder caps
+    robe.add(sph(0.145, 12, 10), mat(-0.30, 2.90, jz, 0, 0, 0.28, 1.25, 0.72, 1.0), [0, 0, 0, 0]);
+    robe.add(sph(0.145, 12, 10), mat(0.30, 2.90, jz, 0, 0, -0.28, 1.25, 0.72, 1.0), [0, 0, 0, 0]);
+    // arms: upper arm sloping down-forward, forearm resting along the bench
+    // top, small dark hand forms on the surface (kept robe-dark: no likeness)
+    for (const s of [-1, 1]) {
+      robe.add(cyl(0.075, 0.10, 0.48, 10), mat(s * 0.325, 2.66, jz + 0.20, 0.82, 0, s * -0.22), [0, 0, 0, 0]);
+      robe.add(cyl(0.062, 0.075, 0.52, 10), mat(s * 0.27, 2.455, jz + 0.62, 1.42, 0, s * -0.10), [0, 0, 0, 0]);
+      robe.add(sph(0.052, 10, 8), mat(s * 0.225, 2.415, jz + 0.86, 0, 0, 0, 1.15, 0.55, 1.35), [0, 0, 0, 0]);
+    }
+    // neck — the head itself lives in a sub-pivot so it can shift subtly
+    robe.add(cyl(0.055, 0.068, 0.15, 12), mat(0, 3.00, jz - 0.015), [0, 0, 0, 0]);
+    // head: featureless ovoid, clearly bowed to the papers (reading posture —
+    // the face is angled down and never presented to the room)
+    headM.add(sph(0.115, 16, 14), mat(0, 3.145, jz + 0.045, 0.38, 0, 0, 0.94, 1.16, 1.02), [0, 2, 0, 0]);
+    // white judicial collar band + two-tier jabot at the throat — the single
+    // bright accent that reads "judge"
+    collar.add(cyl(0.078, 0.088, 0.05, 12), mat(0, 3.005, jz - 0.01), [0, 1, 0, 0]);
+    collar.add(box(0.095, 0.105, 0.016), mat(0, 2.925, jz + 0.285, 0.30, 0, 0), [0, 1, 0, 0]);
+    collar.add(box(0.070, 0.085, 0.014), mat(0, 2.845, jz + 0.315, 0.22, 0, 0.06), [0, 1, 0, 0]);
 
-    // outer group slides in Y (presence); inner pivot sits at the hip so the
-    // lean is a true rotation about the seat, not about the distant origin
+    // outer group slides in Y (presence); hip pivot gives a true seat lean;
+    // a neck pivot carries the head for the idle shift.  All geometry is
+    // world-baked, so each pivot pairs with a negative-offset child group.
     this.judge = new THREE.Group();
     const judgePivot = this._judgePivot = new THREE.Group();
-    judgePivot.position.set(0, seatY, bz - 0.70);
+    judgePivot.position.set(0, seatY, jz);
     const judgeGeo = new THREE.Group();
-    judgeGeo.position.set(0, -seatY, -(bz - 0.70));   // geometry is world-baked
+    judgeGeo.position.set(0, -seatY, -jz);
     const robeMesh = new THREE.Mesh(robe.build(), MATS.robe);
     const collarMesh = new THREE.Mesh(collar.build(), MATS.paper);
     robeMesh.frustumCulled = collarMesh.frustumCulled = false;
-    judgeGeo.add(robeMesh, collarMesh);
+    const headPivot = this._judgeHead = new THREE.Group();
+    headPivot.position.set(0, 3.02, jz);
+    const headGeo = new THREE.Group();
+    headGeo.position.set(0, -3.02, -jz);
+    const headMesh = new THREE.Mesh(headM.build(), MATS.robe);
+    headMesh.frustumCulled = false;
+    headGeo.add(headMesh);
+    headPivot.add(headGeo);
+    judgeGeo.add(robeMesh, collarMesh, headPivot);
     judgePivot.add(judgeGeo);
     this.judge.add(judgePivot);
     this.judge.position.y = -1.05;
     this.rig.add(this.judge);
+
+    // ── OPPOSING COUNSEL — two seated dark-suited figures at the counsel
+    //    tables, backs to the advocate POV (inherently faceless).  Presence
+    //    follows the session (absent when the room is IDLE/ADJOURNED). ──────
+    this._counselGroup = new THREE.Group();
+    this._counsel = [];
+    for (const s of [-1, 1]) {
+      const cx = s * 2.55, cz = -0.84;    // on the middle chair, facing the bench
+      const suit = new Merger();
+      const suitProfile = [
+        [0.001, 0.00], [0.295, 0.02], [0.315, 0.18], [0.285, 0.40],
+        [0.255, 0.56], [0.235, 0.64], [0.13, 0.72], [0.001, 0.75],
+      ];
+      suit.add(lathe(suitProfile, 18), mat(cx, 0.53, cz, -0.05, 0, 0, 1.0, 1.0, 0.78), [0, 1, 0, 0]);
+      suit.add(sph(0.105, 10, 9), mat(cx - 0.215, 1.17, cz, 0, 0, 0.25, 1.2, 0.7, 1.0), [0, 1, 0, 0]);
+      suit.add(sph(0.105, 10, 9), mat(cx + 0.215, 1.17, cz, 0, 0, -0.25, 1.2, 0.7, 1.0), [0, 1, 0, 0]);
+      // arms forward to the table edge (hands hidden behind the torso)
+      suit.add(cyl(0.055, 0.075, 0.42, 8), mat(cx - 0.235, 0.99, cz - 0.20, -0.95, 0, -0.12), [0, 1, 0, 0]);
+      suit.add(cyl(0.055, 0.075, 0.42, 8), mat(cx + 0.235, 0.99, cz - 0.20, -0.95, 0, 0.12), [0, 1, 0, 0]);
+      // neck + back of head, bowed toward the table (face away from camera)
+      suit.add(cyl(0.045, 0.055, 0.10, 10), mat(cx, 1.30, cz), [0, 1, 0, 0]);
+      suit.add(sph(0.096, 12, 10), mat(cx, 1.415, cz - 0.02, -0.24, 0, 0, 0.95, 1.12, 1.0), [0, 1, 0, 0]);
+      const pivot = new THREE.Group();
+      pivot.position.set(cx, 0.53, cz);
+      const geo = new THREE.Group();
+      geo.position.set(-cx, -0.53, -cz);
+      const suitMesh = new THREE.Mesh(suit.build(), MATS.robe);   // variant 1 → suit cloth
+      suitMesh.frustumCulled = false;
+      geo.add(suitMesh);
+      pivot.add(geo);
+      this._counsel.push(pivot);
+      this._counselGroup.add(pivot);
+    }
+    this._counselGroup.position.y = -1.40;
+    this.rig.add(this._counselGroup);
+    // NOTE — gallery figures deliberately SKIPPED: from the fixed podium POV
+    // the rear pews are behind the camera (never visible), and the reference
+    // photographs show the room empty; a phantom audience would only spend
+    // budget to undercut the solemn empty-room mood.
 
     // amp-reactive bench lamp shade (emissive) — over the brass base built above
     const lampG = new Merger();
@@ -1855,6 +1924,7 @@ class PresenceScene {
       this.cur.lect  += (t.lect  - this.cur.lect ) * kFast;
       this.cur.judgeY += (t.judgeY - this.cur.judgeY) * kSlow;
       this.cur.judgeLean += (t.judgeLean - this.cur.judgeLean) * kSlow;
+      this.cur.counselY += (t.counselY - this.cur.counselY) * kSlow;
       this.cur.lampFloor += (t.lampFloor - this.cur.lampFloor) * kFast;
     }
     this._dt = dt;
@@ -1871,8 +1941,26 @@ class PresenceScene {
     this.G.uTime.value = now;
     if (this._moteMat) this._moteMat.uniforms.uTime2.value = now;
     if (this.judge) {
+      // idle life is a pure function of the injected clock: under a frozen
+      // clock (?pose=) `now` is constant, so every offset is constant too
+      // and screenshot hashes stay byte-identical
+      const breathe = Math.sin(now * 0.85) * 0.006;
       this.judge.position.y = this.cur.judgeY;
-      this._judgePivot.rotation.x = this.cur.judgeLean * 0.4;   // lean about the seat
+      this._judgePivot.rotation.x = this.cur.judgeLean * 0.4 + breathe;   // lean about the seat
+      const wander = Math.sin(now * 0.13) * Math.max(0, Math.sin(now * 0.047) - 0.3) * 0.16;
+      this._judgeHead.rotation.y = wander;                                // occasional slow head shift
+      this._judgeHead.rotation.x = Math.sin(now * 0.21 + 1.7) * 0.02;
+    }
+    if (this._counselGroup) {
+      this._counselGroup.position.y = this.cur.counselY;
+      for (let ci = 0; ci < this._counsel.length; ci++) {
+        const ph = ci * 2.61;
+        const cyc = Math.sin(now * 0.10 + ph);
+        const g = Math.max(0, cyc - 0.72) / 0.28;                // rare, slow
+        const ease = g * g * (3 - 2 * g);
+        // occasional lean-to-write (forward = toward the bench, -z) + breath
+        this._counsel[ci].rotation.x = -(0.05 + ease * 0.15) + Math.sin(now * 0.9 + ph) * 0.004;
+      }
     }
     if (this._coneMat) this._coneMat.uniforms.uLectI.value = this.cur.lect;
   }
