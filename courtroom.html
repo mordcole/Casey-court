@@ -224,6 +224,7 @@ float vnoise3(vec3 p){
                  mix(hash13(i+vec3(0,1,1)), hash13(i+vec3(1,1,1)), u.x), u.y), u.z);
 }
 float fbm(vec2 p){ float a=0.0,w=0.5; for(int i=0;i<4;i++){ a+=w*vnoise(p); p=p*2.03+vec2(17.3,9.1); w*=0.5; } return a; }
+float fbmS(vec2 p){ float a=0.0,w=0.5; for(int i=0;i<3;i++){ a+=w*vnoise(p); p=p*2.03+vec2(17.3,9.1); w*=0.5; } return a; }
 float fbm3(vec3 p){ float a=0.0,w=0.5; for(int i=0;i<4;i++){ a+=w*vnoise3(p); p=p*2.03+vec3(13.7,5.1,7.9); w*=0.5; } return a; }
 float ridge(vec2 p){ return 1.0 - abs(2.0*fbm(p) - 1.0); }
 vec2 vorF(vec2 p){                     // F1 distance + cell id hash
@@ -312,30 +313,35 @@ void main(){
   vec2 pp;
   if (vData.z > 0.01) pp = vec2(abs(vUv.x - 0.5)*vData.z, vUv.y*vData.w)*0.85 + seed*7.0;
   else pp = q.xz*0.9 + vec2(q.y*0.55, q.y*0.31);
-  vec2 warp = vec2(fbm(pp*0.8 + 3.7), fbm(pp*0.8 + 9.2));
+  vec2 warp = vec2(fbmS(pp*0.8 + 3.7), fbmS(pp*0.8 + 9.2));
   // dominant diagonal vein direction, as in the Pavonazzo slabs
   vec2 dg = vec2(pp.x*0.8 + pp.y*0.6, pp.x*0.25 - pp.y*0.9);
   float v1 = pow(clamp(ridge(dg*0.55 + warp*1.45), 0.0, 1.0), 7.0);
   float v2 = pow(clamp(ridge(pp*2.1 - warp*0.9 + 4.1), 0.0, 1.0), 13.0);
-  float cloud = fbm(pp*0.45 + warp*0.5);
+  float cloud = fbmS(pp*0.45 + warp*0.5);
   vec3 base, veinC;
   float polish;
   if (variant < 0.5) {           // Pavonazzo — walls, columns, window reveals
     base  = mix(${C3(P.marbleWhiteA)}, ${C3(P.marbleWhiteB)}, cloud*0.8);
-    base *= 0.96 + 0.04*fbm(pp*6.0);
+    base *= 0.96 + 0.04*fbmS(pp*6.0);
     veinC = ${C3(0x6e6873)};
     base  = mix(base, veinC, clamp(v1*0.55 + v2*0.22, 0.0, 1.0));
-    base  = mix(base, ${C3(0x8a8894)}, smoothstep(0.55,0.85,fbm(dg*0.35+11.0))*v1*0.30);
+    base  = mix(base, ${C3(0x8a8894)}, smoothstep(0.55,0.85,fbmS(dg*0.35+11.0))*v1*0.30);
     base  = mix(base, ${C3(0xbfa887)}, smoothstep(0.68,0.92,cloud)*0.10);  // faint warm sienna wash
     polish = 0.6;
-  } else if (variant < 1.5) {    // red breccia — aedicule, curbs, plinth bases
-    vec2 bf = vorF(pp*2.6);
+  } else if (variant < 1.5) {    // red breccia — angular clasts in a cream matrix
+    // dedicated planar coords so vertical faces get real 2-D cells, and a
+    // rotated second domain so nothing lines up into stripes
+    vec2 bq = vec2(vWp.x*0.85 + vWp.z*0.60 + vWp.y*0.22,
+                   vWp.y*1.35 - vWp.x*0.28 + vWp.z*0.40) * 2.3 + seed*3.0;
+    vec2 bf = vorF(bq);
     float clast = bf.y;
-    float matrixLine = smoothstep(0.10, 0.02, vorEdge(pp*2.6));
-    base  = mix(${C3(P.marbleRedA)}, ${C3(P.marbleRedB)}, clast*0.7);
-    base  = mix(base, ${C3(0x45201a)}, smoothstep(0.55,0.9,fbm(pp*1.4+8.0))*0.30);
-    base  = mix(base, ${C3(P.marbleRedVein)}, matrixLine*0.55);            // cream matrix between clasts
-    base  = mix(base, ${C3(P.marbleRedVein)}, v2*0.15);
+    float matrixLine = smoothstep(0.085, 0.015, vorEdge(bq));
+    float subTone = fbmS(bq*0.7 + vec2(clast*13.0, 4.0));
+    base  = mix(${C3(P.marbleRedA)}, ${C3(P.marbleRedB)}, clast*0.55 + subTone*0.30);
+    base  = mix(base, ${C3(0x45201a)}, smoothstep(0.60,0.92,fbmS(bq*0.5+8.0))*0.28);
+    base  = mix(base, ${C3(P.marbleRedVein)}, matrixLine*0.45);
+    base  = mix(base, ${C3(0xc9a98a)}, smoothstep(0.80,0.95,subTone)*0.18); // pale clast faces
     polish = 0.85;
   } else {                       // verde antique — wall plinths, dark bases
     base  = mix(${C3(P.marbleVerdeA)}, ${C3(P.marbleVerdeB)}, cloud);
@@ -529,9 +535,9 @@ void main(){
   vec3 N = normalize(vN);
   float seed = vData.x, variant = vData.y;
   vec2 lp = vUv*vec2(26.0, 22.0) + seed*13.0;
-  float wr = vorEdge(lp);
-  float crease = smoothstep(0.16, 0.02, wr);
   float mottle = fbm(lp*0.5 + 7.0);
+  // wrinkle voronoi only where a variant actually uses it (carpet skips it)
+  float crease = (variant < 0.5 || variant > 1.5) ? smoothstep(0.16, 0.02, vorEdge(lp)) : 0.0;
   vec3 base;
   float spec;
   if (variant < 0.5) {          // black chair leather (the bench chairs)
@@ -572,12 +578,23 @@ void main(){
   vec3 N = normalize(vN);
   vec3 q = vWp*1.1;
   float mott = fbm(q.xy*1.4 + q.z*0.7);
-  vec3 base = mix(${C3(P.plasterA)}, ${C3(P.plasterB)}, mott);
-  base *= 0.95 + 0.05*vnoise3(q*9.0);
-  float age = smoothstep(0.6, 0.95, fbm(q.xz*0.5 + 3.0));
-  base = mix(base, ${C3(0xb5a17e)}, age*0.16);
+  vec3 base = mix(${C3(P.plasterA)}, ${C3(P.plasterB)}, mott*0.45);
+  base *= 0.97 + 0.03*vnoise3(q*9.0);
+  float age = smoothstep(0.65, 0.95, fbm(q.xz*0.5 + 3.0));
+  base = mix(base, ${C3(0xc4b28e)}, age*0.07);
+  // cast-ornament read on the big cove: low-frequency panel banding and
+  // rosette bumps, shaded via ao + a slight normal ripple
+  float orn = 0.0;
+  if (vWp.y > 6.9) {
+    float bandZ = 0.5 + 0.5*cos(vWp.z*3.4);
+    float bandX = 0.5 + 0.5*cos(vWp.x*2.6 + 1.3);
+    float ros = smoothstep(0.55, 0.9, vnoise(vWp.xz*1.7 + 5.0));
+    orn = smoothstep(0.78, 0.96, bandZ)*0.5 + smoothstep(0.80, 0.97, bandX)*0.35 + ros*0.30;
+    base *= 1.0 + orn*0.055;
+    N = normalize(N + vec3(sin(vWp.z*3.4)*0.03, 0.0, sin(vWp.x*2.6)*0.025)*(1.0+orn));
+  }
   float edge = min(min(vUv.x,1.0-vUv.x), min(vUv.y,1.0-vUv.y));
-  float aoL = 0.80 + 0.20*smoothstep(0.0, 0.08, edge);   // coffer recess shading
+  float aoL = (0.84 + 0.16*smoothstep(0.0, 0.08, edge)) * (1.0 - orn*0.10);
   vec3 col = shade(base, N, vWp, 0.06, 0.8, aoL);
   outColor = vec4(col, 1.0);
 }
@@ -694,14 +711,15 @@ void main(){
   vec3 V = normalize(vWp - uCamPos);
   float along = vLoc.y;
   // beam fades with travel and toward the sheet edges
-  float rim = pow(sin(3.14159*clamp(vLoc.x, 0.0, 1.0)), 1.5) * vLoc.z;
+  float rim = pow(max(sin(3.14159*clamp(vLoc.x, 0.0, 1.0)), 0.0), 1.5) * vLoc.z;
   float body = exp(-along*2.1);
   // drifting dust density: slow diagonal churn through the beam
   vec3 dp = vWp*vec3(0.5, 0.35, 0.5) + vec3(uTime*0.010, -uTime*0.017, uTime*0.006);
   float dust = fbm3(dp*2.6);
   dust = 0.35 + 0.65*smoothstep(0.30, 0.78, dust);
   // stronger when looking up-beam into the light; never wash the lens
-  float toward = pow(max(dot(-V, uSunDir), 0.0), 2.5);
+  // (V is camera→fragment; looking INTO the light means V ≈ uSunDir)
+  float toward = pow(max(dot(V, uSunDir), 0.0), 2.5);
   float nearF = smoothstep(0.6, 2.4, length(vWp - uCamPos));
   float i = rim * body * dust * (0.30 + 0.80*toward) * nearF;
   vec3 col = uSunCol * vec3(1.0, 0.93, 0.80) * i * 0.45;
@@ -713,6 +731,7 @@ void main(){
 const VERT_MOTE = /* glsl */`
 uniform float uTime2; uniform float uPix;
 in float aSeed;
+in float aFade;
 out float vA;
 void main(){
   vec3 p = position;
@@ -723,8 +742,8 @@ void main(){
   p.z += cos(t*0.27 + s*3.1)*0.22;
   vec4 mv = viewMatrix * vec4(p, 1.0);
   float d = -mv.z;
-  gl_PointSize = clamp(uPix*2.4/max(d,0.5), 0.75, 3.5);
-  vA = 0.5 + 0.5*sin(t*1.3 + s*17.0);
+  gl_PointSize = clamp(uPix*2.4/max(d,0.5), 0.75, 2.6);
+  vA = (0.5 + 0.5*sin(t*1.3 + s*17.0)) * aFade;   // die with the beam body
   gl_Position = projectionMatrix * mv;
 }
 `;
@@ -736,7 +755,7 @@ out vec4 outColor;
 void main(){
   vec2 c = gl_PointCoord*2.0 - 1.0;
   float a = smoothstep(1.0, 0.15, length(c));
-  outColor = vec4(uSunCol*vec3(1.0,0.94,0.8)*2.2, a*vA*0.5);
+  outColor = vec4(uSunCol*vec3(1.0,0.94,0.8)*2.2, a*vA*0.42);
 }
 `;
 
@@ -876,6 +895,7 @@ function deriveTargets(state) {
     case 'AWAITING':       return { judgeY:  0.00, judgeLean: 0.04, house: 0.88, lect: 1.0, lampFloor: 0.05, exposure: 1.04 };
     case 'COURT_SPEAKING': return { judgeY:  0.00, judgeLean: 0.10, house: 0.70, lect: 0.32, lampFloor: 0.0, exposure: 1.02 };
     case 'ADJOURNED':      return { judgeY: -1.05, judgeLean: 0.00, house: 0.16, lect: 0.0, lampFloor: 0.0, exposure: 1.28 };
+    default:               return { judgeY: -1.05, judgeLean: 0.00, house: 0.42, lect: 0.0, lampFloor: 0.0, exposure: 1.16 };
   }
 }
 
@@ -941,9 +961,9 @@ class PresenceScene {
     this.rig = new THREE.Group();       this.rig.name = 'dynamicRig';
     scene.add(this.staticEnv, this.rig);
 
-    const camera = this.camera = new THREE.PerspectiveCamera(54, innerWidth / innerHeight, 0.1, 80);
+    const camera = this.camera = new THREE.PerspectiveCamera(58, innerWidth / innerHeight, 0.1, 80);
     camera.position.set(0.42, 1.78, 3.30);          // the advocate, at the podium
-    camera.lookAt(0.0, 3.15, -8.6);                 // bench + aedicule + vault in frame
+    camera.lookAt(0.0, 3.80, -8.6);                 // bench + aedicule + far laylight in frame
 
     // ── shared uniforms (one object → every material updates at once) ──────
     const G = this.G = {
@@ -993,6 +1013,22 @@ class PresenceScene {
     this._buildRig(MATS);
     this._buildAtmosphere(mkMat);
 
+    // depth-prepass kit: opaque meshes get a colour-write-off pass first so
+    // early-Z rejects hidden fragments before the expensive shaders run.
+    // CRITICAL: it must use VERT_STD so its depth is bit-identical to the
+    // colour pass (a different vertex chain would z-fight at EQUAL depth).
+    this._depthMat = new THREE.ShaderMaterial({
+      glslVersion: THREE.GLSL3,
+      vertexShader: VERT_STD,
+      fragmentShader: 'precision highp float; out vec4 o; void main(){ o = vec4(0.0); }',
+    });
+    this._depthMat.colorWrite = false;
+    this._transparents = [];
+    scene.traverse(o => {
+      if ((o.isMesh || o.isPoints) && (o.isPoints || (o.material && o.material.transparent)))
+        this._transparents.push(o);
+    });
+
     // ── bake the light volume ───────────────────────────────────────────────
     const t0 = performance.now();
     await this._bakeLightVolume(setLoad);
@@ -1026,6 +1062,7 @@ class PresenceScene {
     addEventListener('resize', () => {
       camera.aspect = innerWidth / innerHeight;
       camera.updateProjectionMatrix();
+      renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));   // window may move across monitors
       renderer.setSize(innerWidth, innerHeight);
       const pr = renderer.getPixelRatio();
       this.sceneRT.setSize(innerWidth * pr, innerHeight * pr);
@@ -1282,9 +1319,12 @@ class PresenceScene {
         lampGlass.add(sph(0.048, 7, 6), mat(-fw/2 + i * fw / nx2, flatY - 0.40, L.z + szn * (fd/2 + 0.13)), [0, 0, 0, 0]);
       for (let i = 1; i < nz2; i++) for (const sxn of [-1, 1])
         lampGlass.add(sph(0.048, 7, 6), mat(sxn * (fw/2 + 0.13), flatY - 0.40, L.z - fd/2 + i * fd / nz2), [0, 0, 0, 0]);
-      // bake samples
-      this.fixtures.push([-fw/2, flatY - 0.45, L.z - fd/2, 0.9], [fw/2, flatY - 0.45, L.z - fd/2, 0.9],
-                         [-fw/2, flatY - 0.45, L.z + fd/2, 0.9], [fw/2, flatY - 0.45, L.z + fd/2, 0.9]);
+      // bake samples: one shared shadow ray per laylight, four corner emitters
+      this.fixtures.push({
+        c: [0, flatY - 0.45, L.z],
+        pts: [[-fw/2, flatY - 0.45, L.z - fd/2, 0.9], [fw/2, flatY - 0.45, L.z - fd/2, 0.9],
+              [-fw/2, flatY - 0.45, L.z + fd/2, 0.9], [fw/2, flatY - 0.45, L.z + fd/2, 0.9]],
+      });
       this._laylightSamples.push([0, flatY - 0.12, L.z], [-fw/2 + 0.7, flatY - 0.12, L.z], [fw/2 - 0.7, flatY - 0.12, L.z]);
     }
 
@@ -1501,11 +1541,19 @@ class PresenceScene {
     collar.add(box(0.052, 0.11, 0.012), mat(-0.032, seatY + 0.40, bz - 0.535, 0.18, 0, 0.10), [0, 1, 0, 0]);
     collar.add(box(0.052, 0.11, 0.012), mat(0.032, seatY + 0.40, bz - 0.535, 0.18, 0, -0.10), [0, 1, 0, 0]);
 
+    // outer group slides in Y (presence); inner pivot sits at the hip so the
+    // lean is a true rotation about the seat, not about the distant origin
     this.judge = new THREE.Group();
+    const judgePivot = this._judgePivot = new THREE.Group();
+    judgePivot.position.set(0, seatY, bz - 0.70);
+    const judgeGeo = new THREE.Group();
+    judgeGeo.position.set(0, -seatY, -(bz - 0.70));   // geometry is world-baked
     const robeMesh = new THREE.Mesh(robe.build(), MATS.robe);
     const collarMesh = new THREE.Mesh(collar.build(), MATS.paper);
     robeMesh.frustumCulled = collarMesh.frustumCulled = false;
-    this.judge.add(robeMesh, collarMesh);
+    judgeGeo.add(robeMesh, collarMesh);
+    judgePivot.add(judgeGeo);
+    this.judge.add(judgePivot);
     this.judge.position.y = -1.05;
     this.rig.add(this.judge);
 
@@ -1536,7 +1584,7 @@ class PresenceScene {
           float nearF = smoothstep(0.8, 2.6, length(vWpC - uCamPos));
           outColor = vec4(vec3(1.0, 0.82, 0.55) * uLectI * 0.085 * a * nearF, 1.0);
         }`,
-      uniforms: { uLectI: this.G ? this.G.uLectI : { value: 0 }, uCamPos: { value: new THREE.Vector3() } },
+      uniforms: { uLectI: this.G.uLectI, uCamPos: this.G.uCamPos },   // shared → stays live
       transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
     });
     this._coneMat = coneMat;
@@ -1587,9 +1635,10 @@ class PresenceScene {
     shafts.renderOrder = 5;
     this.staticEnv.add(shafts);
 
-    // ── dust motes inside the beams ─────────────────────────────────────────
-    const N = 900;
-    const mp = new Float32Array(N * 3), ms = new Float32Array(N);
+    // ── dust motes inside the beams — each fades with the beam body so no
+    //    speck ever floats where the shaft itself has died out ──────────────
+    const N = 550;
+    const mp = new Float32Array(N * 3), ms = new Float32Array(N), mf = new Float32Array(N);
     for (let i = 0; i < N; i++) {
       const wnd = WINDOWS[(rng() * WINDOWS.length) | 0];
       const t = rng();
@@ -1598,10 +1647,12 @@ class PresenceScene {
       mp[i*3+1] = (wnd.sill + rng() * (wnd.spring + wnd.r - wnd.sill)) + SUN_TO_SCENE.y * 10.0 * t + (rng()-0.5)*0.5;
       mp[i*3+2] = wnd.z + (rng()-0.5) * wnd.w * 0.9 + SUN_TO_SCENE.z * 10.0 * t;
       ms[i] = rng();
+      mf[i] = Math.exp(-t * 2.1);
     }
     const mg = new THREE.BufferGeometry();
     mg.setAttribute('position', new THREE.BufferAttribute(mp, 3));
     mg.setAttribute('aSeed', new THREE.BufferAttribute(ms, 1));
+    mg.setAttribute('aFade', new THREE.BufferAttribute(mf, 1));
     this._moteMat = new THREE.ShaderMaterial({
       glslVersion: THREE.GLSL3, vertexShader: VERT_MOTE, fragmentShader: FRAG_MOTE,
       uniforms: { uTime2: { value: 0 }, uPix: { value: innerHeight * this.renderer.getPixelRatio() * 0.5 }, uSunCol: this.G.uSunCol },
@@ -1662,7 +1713,7 @@ class PresenceScene {
     for (const wnd of WINDOWS) for (let i = 0; i < 6; i++)
       winSamples.push([x0 + 0.02, wnd.sill + (i + 0.5)/6 * (wnd.spring + wnd.r - wnd.sill), wnd.z + (rng() - 0.5) * wnd.w * 0.8]);
     for (const ls of this._laylightSamples) winSamples.push(ls);   // laylight daylight joins the A channel
-    const fixtures = this.fixtures.map(f => [f[0], f[1], f[2], f[3] ?? 1.0]);
+    const fixGroups = this.fixtures;   // [{c:[x,y,z], pts:[[x,y,z,w]…]}]
     // AO ray set: fixed low-discrepancy directions, up-biased sphere
     const aoDirs = [];
     for (let i = 0; i < 18; i++) {
@@ -1672,6 +1723,7 @@ class PresenceScene {
       aoDirs.push([Math.sin(th) * Math.cos(ph), Math.cos(th), Math.sin(th) * Math.sin(ph)]);
     }
 
+    let lastYield = performance.now();
     for (let j = 0; j < VY; j++) {
       for (let k = 0; k < VZ; k++) {
         for (let i = 0; i < VX; i++) {
@@ -1681,11 +1733,11 @@ class PresenceScene {
           if (occAt(oi, oj, ok) === 1) { solid[idx] = 1; continue; }
           // ── sun beam: jittered cone toward the sun ──
           let sun = 0;
-          for (let r = 0; r < 4; r++) {
+          for (let r = 0; r < 3; r++) {
             const jx = (rng() - 0.5) * 0.055, jy = (rng() - 0.5) * 0.055, jz = (rng() - 0.5) * 0.055;
             const dl = 1 / Math.hypot(-S.x + jx, -S.y + jy, -S.z + jz);
             const m = march(wx, wy, wz, (-S.x + jx) * dl, (-S.y + jy) * dl, (-S.z + jz) * dl, 26);
-            if (!m.hit) sun += 0.25;
+            if (!m.hit) sun += 1 / 3;
           }
           // ── window fill: rays toward sample points on the glass ──
           let win = 0;
@@ -1703,14 +1755,19 @@ class PresenceScene {
             ao += m.hit ? Math.min(1, m.t / 3.4) : 1;
           }
           ao /= aoDirs.length;
-          // ── fixtures: shadow ray + inverse square ──
+          // ── fixtures: ONE shadow ray per laylight; its four corner
+          //    emitters share that visibility (they sit on the same panel) ──
           let fx = 0;
-          for (const f of fixtures) {
-            const ddx = f[0] - wx, ddy = f[1] - wy, ddz = f[2] - wz;
-            const dist = Math.hypot(ddx, ddy, ddz);
-            if (dist > 14) continue;
-            const m = march(wx, wy, wz, ddx / dist, ddy / dist, ddz / dist, dist - 0.2);
-            if (!m.hit) fx += f[3] * 2.1 / (1.5 + dist * dist * 0.55);
+          for (const g of fixGroups) {
+            const cdx = g.c[0] - wx, cdy = g.c[1] - wy, cdz = g.c[2] - wz;
+            const cdist = Math.hypot(cdx, cdy, cdz);
+            if (cdist > 14) continue;
+            const m = march(wx, wy, wz, cdx / cdist, cdy / cdist, cdz / cdist, cdist - 0.2);
+            if (m.hit) continue;
+            for (const f of g.pts) {
+              const ddx = f[0] - wx, ddy = f[1] - wy, ddz = f[2] - wz;
+              fx += f[3] * 2.1 / (1.5 + (ddx*ddx + ddy*ddy + ddz*ddz) * 0.55);
+            }
           }
           vol[idx * 4]     = Math.min(255, sun * 255) | 0;
           vol[idx * 4 + 1] = Math.min(255, ao * 255) | 0;
@@ -1718,7 +1775,11 @@ class PresenceScene {
           vol[idx * 4 + 3] = Math.min(255, win * 255) | 0;
         }
       }
-      if ((j & 3) === 3) await setLoad(0.18 + 0.72 * (j / VY), 'baking the light…');
+      // yield on elapsed time so slow machines keep a live loader bar
+      if (performance.now() - lastYield > 45) {
+        await setLoad(0.18 + 0.72 * (j / VY), 'baking the light…');
+        lastYield = performance.now();
+      }
     }
     // dilate lighting into solid cells so surface samples never read black
     for (let pass = 0; pass < 2; pass++) {
@@ -1777,7 +1838,9 @@ class PresenceScene {
   }
   freezeForPose(state, amp) {
     this._frozen = true;
-    this._enter(state);
+    // route through the reducer so an unknown ?pose= value can never leave
+    // the ceremony state set (it falls back to IDLE instead of crashing)
+    this._enter(ceremonyReduce('IDLE', { type: 'SET_STATE', state }));
     this.setAmp(amp);
     const t = deriveTargets(this.state);
     Object.assign(this.cur, t);
@@ -1793,8 +1856,8 @@ class PresenceScene {
       this.cur.judgeY += (t.judgeY - this.cur.judgeY) * kSlow;
       this.cur.judgeLean += (t.judgeLean - this.cur.judgeLean) * kSlow;
       this.cur.lampFloor += (t.lampFloor - this.cur.lampFloor) * kFast;
-      this.exposure += (t.exposure - this.exposure) * kSlow * 0.6;
     }
+    this._dt = dt;
     // bench lamp: during COURT_SPEAKING it IS the amp (barge-in: amp 0 → 0
     // this very frame, no easing).  Outside that state only a faint floor.
     let lamp = this.cur.lampFloor;
@@ -1809,7 +1872,7 @@ class PresenceScene {
     if (this._moteMat) this._moteMat.uniforms.uTime2.value = now;
     if (this.judge) {
       this.judge.position.y = this.cur.judgeY;
-      this.judge.rotation.x = this.cur.judgeLean * 0.4;
+      this._judgePivot.rotation.x = this.cur.judgeLean * 0.4;   // lean about the seat
     }
     if (this._coneMat) this._coneMat.uniforms.uLectI.value = this.cur.lect;
   }
@@ -1817,20 +1880,44 @@ class PresenceScene {
     const r = this.renderer;
     const t0 = performance.now();
     r.setRenderTarget(this.sceneRT);
+    r.autoClear = false;
+    r.clear();
+    // depth prepass (colour writes off, opaque only): early-Z then rejects
+    // every fragment later hidden — floor under the carpet, wall behind the
+    // bench — before their expensive shaders run
+    for (const o of this._transparents) o.visible = false;
+    this.scene.overrideMaterial = this._depthMat;
+    r.render(this.scene, this.camera);
+    this.scene.overrideMaterial = null;
+    for (const o of this._transparents) o.visible = true;
     r.render(this.scene, this.camera);
     this._sceneStats = { calls: r.info.render.calls, tris: r.info.render.triangles };
-    // adaptive exposure: probe average luminance every 14 frames (live mode)
-    if (!this._frozen && (this._frame % 14) === 0) {
+    // adaptive exposure: 1-px luminance probe every 14 frames (live mode),
+    // read back asynchronously so the pipeline never stalls
+    if (!this._frozen && (this._frame % 14) === 0 && !this._lumPending) {
       this.postQuad.material = this.lumMat;
       r.setRenderTarget(this.lumRT);
       r.render(this.postScene, this.postCam);
-      r.readRenderTargetPixels(this.lumRT, 0, 0, 1, 1, this._lumPix);
-      const l = this._lumPix[0] / 255;
-      const key = 0.30;
-      this._expTarget = Math.min(2.2, Math.max(0.55, key / Math.max(0.04, l / Math.max(0.001, 1 - l)) )) ;
       this.postQuad.material = this.postMat;
+      const apply = () => {
+        const l = this._lumPix[0] / 255;
+        const key = 0.30;
+        this._expTarget = Math.min(2.2, Math.max(0.55, key / Math.max(0.04, l / Math.max(0.001, 1 - l))));
+        this._lumPending = false;
+      };
+      if (r.readRenderTargetPixelsAsync) {
+        this._lumPending = true;
+        r.readRenderTargetPixelsAsync(this.lumRT, 0, 0, 1, 1, this._lumPix).then(apply).catch(() => { this._lumPending = false; });
+      } else {
+        r.readRenderTargetPixels(this.lumRT, 0, 0, 1, 1, this._lumPix);
+        apply();
+      }
     }
-    if (!this._frozen && this._expTarget) this.exposure += (this._expTarget * deriveTargets(this.state).exposure - this.exposure) * 0.03;
+    // ONE exposure controller: state look × measured adaptation, dt-corrected
+    if (!this._frozen) {
+      const target = (this._expTarget || 1.0) * deriveTargets(this.state).exposure;
+      this.exposure += (target - this.exposure) * (1 - Math.exp(-(this._dt || 0.016) * 2.2));
+    }
     this.postMat.uniforms.uExposure.value = this.exposure;
     this.postMat.uniforms.uT.value = this._frozen ? 0.5 : now;
     r.setRenderTarget(null);
