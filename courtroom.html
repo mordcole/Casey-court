@@ -72,6 +72,22 @@
   <button id="simulate">Simulate hearing</button>
 </div>
 
+<!-- WebGL2 gate runs as a CLASSIC script so it fires even if the module
+     import below never resolves (three r185 requires WebGL2). -->
+<script>
+  window.__WEBGL2_OK = (() => {
+    try { return !!document.createElement('canvas').getContext('webgl2'); }
+    catch (e) { return false; }
+  })();
+  if (!window.__WEBGL2_OK) {
+    document.addEventListener('DOMContentLoaded', () => {
+      document.getElementById('nogl').style.display = 'flex';
+      document.getElementById('loader').style.display = 'none';
+      document.getElementById('ui').classList.add('hidden');
+    });
+  }
+</script>
+
 <!-- three.js r185 from CDN — the only external reference in this file -->
 <script type="importmap">
   { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.185.0/build/three.module.js" } }
@@ -81,11 +97,14 @@
 // ═══════════════════════════════════════════════════════════════════════════
 //  A PROCEDURAL BEAUX-ARTS COURTROOM  —  single-file visual spike
 //
-//  Styling is grounded in the James R. Browning U.S. Court of Appeals
-//  Building, San Francisco (1905): white Pavonazzo-type veined marble,
-//  red Numidian-type marble columns, gold-ground mosaic, mahogany joinery,
-//  gilt plaster, tall round-arched fenestration.  No real court's name or
-//  seal appears; the seal reads "THE COURT".
+//  A high-fidelity procedural reconstruction of COURTROOM ONE of the James
+//  R. Browning U.S. Court of Appeals Building, San Francisco (1905), from
+//  the Carol Highsmith / LOC reference photographs: cove-vaulted ornamented
+//  plaster ceiling with glowing laylights ringed by marquee bulbs,
+//  book-matched Pavonazzo marble walls, red-breccia aedicule framing a
+//  geometric diamond mosaic, allegorical mosaic lunette in the attic, long
+//  mahogany en-banc bench.  NO real court's name or official seal appears
+//  anywhere: the mosaics are generic geometric/allegorical art.
 //
 //  Techniques (reimplemented, not copied, from studying deedy/glacial-valley):
 //   · one shared GLSL noise library, all hero surfaces hand-written shaders
@@ -99,14 +118,9 @@
 //  and easing so screenshots are reproducible.  Demo UI hides under ?pose.
 // ═══════════════════════════════════════════════════════════════════════════
 
-// ── WebGL2 gate (three r185 requires WebGL2) ────────────────────────────────
-const glProbe = document.createElement('canvas').getContext('webgl2');
-if (!glProbe) {
-  document.getElementById('nogl').style.display = 'flex';
-  document.getElementById('loader').style.display = 'none';
-  document.getElementById('ui').classList.add('hidden');
-  throw new Error('WebGL2 unavailable');
-}
+// ── WebGL2 gate: the classic script above already showed the fallback UI;
+//    here we only stop the module (imports hoist, so this runs post-import) ──
+if (!window.__WEBGL2_OK) throw new Error('WebGL2 unavailable');
 
 import * as THREE from 'three';
 
@@ -132,39 +146,47 @@ const RealClock   = () => ({ now: () => performance.now() / 1000 });
 const FrozenClock = (t) => ({ now: () => t });
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  PALETTE — values grounded in the Browning building's documented materials
-//  (photo download was blocked by this build environment's network policy,
-//  so hexes come from documented stone/metal types rather than pixel picks).
+//  PALETTE — sampled from the Courtroom One reference photographs (Carol
+//  Highsmith / LOC, supplied by the user in-session): book-matched Pavonazzo
+//  walls, red-breccia aedicule, near-black mahogany bench, grey-blue carpet,
+//  warm marquee-bulb strings around cool glowing laylights.  The lunette
+//  mosaic close-up drives the pictorial tesserae palette.
 // ═══════════════════════════════════════════════════════════════════════════
 const P = {
-  marbleWhiteA:  0xe9e2d2,  marbleWhiteB: 0xcfc4ac,  marbleVeinGrey: 0x8d8272,
-  marbleRedA:    0x6f2a1e,  marbleRedB:   0x93412c,  marbleRedVein:  0xe3cfae,
-  marbleVerdeA:  0x22332a,  marbleVerdeB: 0x3a5443,  marbleVerdeVein:0x9db89e,
-  mahoganyA:     0x38180e,  mahoganyB:    0x6b3018,  mahoganyC:      0x82452a,
-  oakA:          0x4a3018,  oakB:         0x6e4c28,
-  brassA:        0x6a4c1e,  brassB:       0xc9a24a,  brassHi:        0xf2dc9a,
-  leatherA:      0x3c1512,  leatherB:     0x62241d,
-  plasterA:      0xded2b8,  plasterB:     0xcabfa2,
-  mosaicGoldA:   0xb08a34,  mosaicGoldB:  0xe0bc62,  mosaicBlue:     0x1e3a5c,
-  mosaicGreen:   0x2e5240,  mosaicIvory:  0xe6ddc6,  mosaicOx:       0x6e2a20,
-  carpetA:       0x3c1414,  carpetB:      0x5a2020,
-  paperA:        0xe8e0cd,
-  robeA:         0x141319,
-  sunCol:        [1.00, 0.90, 0.74],   // low warm sun through tall glass
-  winCol:        [0.52, 0.62, 0.82],   // cool sky fill from the fenestration
-  ambCol:        [0.42, 0.35, 0.26],   // warm stone bounce
-  fixCol:        [1.00, 0.70, 0.40],   // incandescent brass fixtures
+  marbleWhiteA:  0xece7db,  marbleWhiteB: 0xd4ccbe,  marbleVeinGrey: 0x59525c,
+  marbleRedA:    0x6e352c,  marbleRedB:   0x8f4b3a,  marbleRedVein:  0xd9c3a4,
+  marbleVerdeA:  0x1a2620,  marbleVerdeB: 0x2e4436,  marbleVerdeVein:0x8aa68c,
+  mahoganyA:     0x28130a,  mahoganyB:    0x4e2a16,  mahoganyC:      0x6b3f26,
+  oakA:          0x53301b,  oakB:         0x8a5a32,
+  brassA:        0x71582a,  brassB:       0xbfa054,  brassHi:        0xf0e0ac,
+  leatherA:      0x131417,  leatherB:     0x24262b,
+  plasterA:      0xe9dfc9,  plasterB:     0xcfc3a8,
+  mosaicGoldA:   0xb1883c,  mosaicGoldB:  0xe2c06a,  mosaicBlue:     0x27405e,
+  mosaicGreen:   0x39543f,  mosaicIvory:  0xe8dfc8,  mosaicOx:       0x6c2f24,
+  lunPurple:     0x4d4766,  lunErmine:    0xdcd4de,  lunSunset:      0xd9a83c,
+  lunOrange:     0xc27a34,  lunTree:      0x21333c,  lunRusset:      0x8a4a28,
+  lunFlesh:      0xd7a87f,  lunOlive:     0x6d6749,
+  carpetA:       0x5f6a66,  carpetB:      0x818c86,
+  paperA:        0xe9e2d0,
+  robeA:         0x14131a,
+  sunCol:        [1.00, 0.90, 0.74],   // warm sun through the arched windows
+  winCol:        [0.62, 0.70, 0.82],   // cool daylight: laylights + window fill
+  ambCol:        [0.44, 0.38, 0.30],   // warm stone bounce
+  fixCol:        [1.00, 0.80, 0.52],   // incandescent marquee bulbs
 };
 const C3 = (hex) => { const c = new THREE.Color(hex); return `vec3(${c.r.toFixed(4)},${c.g.toFixed(4)},${c.b.toFixed(4)})`; };
 
 // ── room dimensions (metres) ────────────────────────────────────────────────
-const ROOM = { x0: -7.2, x1: 7.2, y0: 0, y1: 8.4, z0: -11.5, z1: 11.5 };
-const SUN_TO_SCENE = new THREE.Vector3(0.76, -0.60, -0.12).normalize(); // through the -X windows
+const ROOM = { x0: -7.6, x1: 7.6, y0: 0, y1: 8.75, z0: -11.5, z1: 11.5 };
+// ceiling section (matches the hero photo): arcade → entablature → attic →
+// cornice → cove vault rising to a flat centre carrying three laylights
+const CEIL = { arcTop: 5.15, ent0: 5.15, ent1: 6.02, att1: 6.92, cor1: 7.18, flatY: 8.55, coveW: 2.7 };
+const LAYLIGHTS = [ { z: -5.2, w: 4.6, d: 2.7 }, { z: 0, w: 4.6, d: 2.7 }, { z: 5.2, w: 4.6, d: 2.7 } ];
+const SUN_TO_SCENE = new THREE.Vector3(0.74, -0.58, -0.34).normalize(); // through the -X windows, raking toward the bench-left corner
 const SUN_DIR = SUN_TO_SCENE.clone().negate();                          // toward the sun
 const WINDOWS = [   // arched openings in the -X wall: [zCenter, width, sillY, springY, archR]
-  { z: -6.4, w: 1.9, sill: 1.5, spring: 4.7, r: 0.95 },
-  { z: -1.9, w: 1.9, sill: 1.5, spring: 4.7, r: 0.95 },
-  { z:  2.6, w: 1.9, sill: 1.5, spring: 4.7, r: 0.95 },
+  { z: -3.4, w: 1.7, sill: 1.35, spring: 3.85, r: 0.85 },
+  { z:  1.6, w: 1.7, sill: 1.35, spring: 3.85, r: 0.85 },
 ];
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -244,22 +266,22 @@ vec3 shade(vec3 alb, vec3 N, vec3 wp, float specA, float rough, float aoL){
   vec3 V = normalize(uCamPos - wp);
   vec4 bk = bakeAt(wp, N);
   float sunV = bk.r, ao = bk.g, fixV = bk.b, winV = bk.a;
-  vec3 winDir = normalize(vec3(-1.0, 0.35, 0.0));       // toward the fenestration wall
-  vec3 col = alb * uSunCol * 5.2 * sunV * max(dot(N, uSunDir), 0.0);
-  col += alb * uWinCol * 1.35 * winV * (max(dot(N, winDir), 0.0)*0.75 + 0.25);
+  vec3 winDir = normalize(vec3(-0.38, 0.90, 0.0));       // daylight: laylights above + window wall
+  vec3 col = alb * uSunCol * 4.4 * sunV * max(dot(N, uSunDir), 0.0);
+  col += alb * uWinCol * 1.75 * winV * (max(dot(N, winDir), 0.0)*0.75 + 0.25);
   col += alb * uAmbCol * 1.15 * ao * (0.62 + 0.38*clamp(N.y*0.5+0.5, 0.0, 1.0));
   col += alb * uFixCol * 1.9 * fixV * uHouse;
-  // speculars: sun + window sheen + fixtures-as-glints
+  // speculars: sun + daylight sheen + fixtures-as-glints
   float fres = 0.05 + 0.95*pow(1.0 - max(dot(N, V), 0.0), 5.0);
-  col += uSunCol * 5.2 * sunV * max(dot(N,uSunDir),0.0) * specA * fres * lobe(N, uSunDir, V, rough);
-  col += uWinCol * 1.35 * winV * specA * fres * lobe(N, winDir, V, min(rough+0.18,1.0)) * 0.6;
+  col += uSunCol * 4.4 * sunV * max(dot(N,uSunDir),0.0) * specA * fres * lobe(N, uSunDir, V, rough);
+  col += uWinCol * 1.75 * winV * specA * fres * lobe(N, winDir, V, min(rough+0.18,1.0)) * 0.6;
   col += uFixCol * 1.9 * fixV * uHouse * specA * fres * lobe(N, normalize(vec3(0.2,1.0,0.1)), V, min(rough+0.25,1.0)) * 0.5;
   col += dynLight(alb, N, wp, V, specA, rough, uLampPos, vec3(1.0,0.58,0.24), uLampI*2.6);
   col += dynLight(alb, N, wp, V, specA, rough, uLectPos, vec3(1.0,0.84,0.58), uLectI*2.0);
   col *= aoL;
   // subtle interior depth haze, warm-dark
   float d = length(wp - uCamPos);
-  col = mix(col, vec3(0.045,0.038,0.030)*(0.4+uHouse), 1.0 - exp(-d*d*0.00042));
+  col = mix(col, vec3(0.055,0.048,0.040)*(0.4+uHouse), 1.0 - exp(-d*d*0.00026));
   return col;
 }
 `;
@@ -284,29 +306,38 @@ void main(){
   vec3 N = normalize(vN);
   float variant = vData.y; float seed = vData.x;
   vec3 q = vWp * 1.35 + seed*19.0;
-  // vein network: two warped ridged layers, sharpened
-  vec2 pp = q.xz*0.9 + vec2(q.y*0.55, q.y*0.31);
-  vec2 warp = vec2(fbm(pp*0.9 + 3.7), fbm(pp*0.9 + 9.2));
-  float v1 = pow(clamp(ridge(pp*0.75 + warp*1.35), 0.0, 1.0), 9.0);
-  float v2 = pow(clamp(ridge(pp*2.3 - warp*0.9 + 4.1), 0.0, 1.0), 14.0);
+  // vein coordinates: big wall panels carry their size in aData.zw and are
+  // BOOK-MATCHED (mirrored about the panel centre, like the hero photo);
+  // everything else veins in world space
+  vec2 pp;
+  if (vData.z > 0.01) pp = vec2(abs(vUv.x - 0.5)*vData.z, vUv.y*vData.w)*0.85 + seed*7.0;
+  else pp = q.xz*0.9 + vec2(q.y*0.55, q.y*0.31);
+  vec2 warp = vec2(fbm(pp*0.8 + 3.7), fbm(pp*0.8 + 9.2));
+  // dominant diagonal vein direction, as in the Pavonazzo slabs
+  vec2 dg = vec2(pp.x*0.8 + pp.y*0.6, pp.x*0.25 - pp.y*0.9);
+  float v1 = pow(clamp(ridge(dg*0.55 + warp*1.45), 0.0, 1.0), 7.0);
+  float v2 = pow(clamp(ridge(pp*2.1 - warp*0.9 + 4.1), 0.0, 1.0), 13.0);
   float cloud = fbm(pp*0.45 + warp*0.5);
   vec3 base, veinC;
   float polish;
-  if (variant < 0.5) {           // white Pavonazzo-type — walls, floor field
-    base  = mix(${C3(P.marbleWhiteA)}, ${C3(P.marbleWhiteB)}, cloud);
-    base *= 0.94 + 0.06*fbm(pp*6.0);
-    veinC = ${C3(P.marbleVeinGrey)};
-    base  = mix(base, veinC, v1*0.75 + v2*0.35);
-    base  = mix(base, ${C3(0xb9a273)}, smoothstep(0.62,0.85,cloud)*0.22);   // warm sienna drift
-    polish = 0.55;
-  } else if (variant < 1.5) {    // red Numidian-type — columns, dais accents
-    base  = mix(${C3(P.marbleRedA)}, ${C3(P.marbleRedB)}, cloud);
-    base *= 0.90 + 0.10*fbm(pp*5.0 + 2.0);
-    veinC = ${C3(P.marbleRedVein)};
-    base  = mix(base, veinC, v1*0.55 + v2*0.30);
-    base  = mix(base, ${C3(0x3a120c)}, smoothstep(0.6,0.9,fbm(pp*1.7+8.0))*0.4);
+  if (variant < 0.5) {           // Pavonazzo — walls, columns, window reveals
+    base  = mix(${C3(P.marbleWhiteA)}, ${C3(P.marbleWhiteB)}, cloud*0.8);
+    base *= 0.96 + 0.04*fbm(pp*6.0);
+    veinC = ${C3(0x6e6873)};
+    base  = mix(base, veinC, clamp(v1*0.55 + v2*0.22, 0.0, 1.0));
+    base  = mix(base, ${C3(0x8a8894)}, smoothstep(0.55,0.85,fbm(dg*0.35+11.0))*v1*0.30);
+    base  = mix(base, ${C3(0xbfa887)}, smoothstep(0.68,0.92,cloud)*0.10);  // faint warm sienna wash
+    polish = 0.6;
+  } else if (variant < 1.5) {    // red breccia — aedicule, curbs, plinth bases
+    vec2 bf = vorF(pp*2.6);
+    float clast = bf.y;
+    float matrixLine = smoothstep(0.10, 0.02, vorEdge(pp*2.6));
+    base  = mix(${C3(P.marbleRedA)}, ${C3(P.marbleRedB)}, clast*0.7);
+    base  = mix(base, ${C3(0x45201a)}, smoothstep(0.55,0.9,fbm(pp*1.4+8.0))*0.30);
+    base  = mix(base, ${C3(P.marbleRedVein)}, matrixLine*0.55);            // cream matrix between clasts
+    base  = mix(base, ${C3(P.marbleRedVein)}, v2*0.15);
     polish = 0.85;
-  } else {                       // verde antique — floor border bands
+  } else {                       // verde antique — wall plinths, dark bases
     base  = mix(${C3(P.marbleVerdeA)}, ${C3(P.marbleVerdeB)}, cloud);
     veinC = ${C3(P.marbleVerdeVein)};
     base  = mix(base, veinC, v1*0.6 + v2*0.4);
@@ -331,26 +362,29 @@ out vec4 outColor;
 void main(){
   vec3 N = normalize(vN);
   float seed = vData.x, variant = vData.y;
-  // grain flows along the piece's authored u direction; seed offsets the log
-  vec2 gp = vec2(vUv.x*7.0 + seed*11.0, vUv.y*1.15 + seed*5.0);
-  float wob = fbm(gp*1.6);
-  float rings = 0.5 + 0.5*sin(gp.y*46.0 + wob*9.5 + seed*40.0);
-  rings = pow(rings, 1.6);
-  float fibre = vnoise(vec2(gp.x*3.0, gp.y*160.0));
-  float pore  = smoothstep(0.72, 0.95, vnoise(vec2(gp.x*14.0, gp.y*240.0)));
+  // world-space grain (per-piece seed offsets the log) — long fibres, wide
+  // quiet ring bands, fine pores; calm like french-polished casework
+  vec3 q = vWp*1.0 + seed*17.0;
+  float axisC = q.x*0.32 + q.z*0.32 + q.y*1.9;         // grain runs along the piece
+  float acrossC = q.x*0.9 - q.z*0.9 + q.y*0.22;
+  float wob = fbm(vec2(axisC*0.5, acrossC*1.4));
+  float rings = 0.5 + 0.5*sin(acrossC*9.0 + wob*4.5 + seed*40.0);
+  rings = smoothstep(0.15, 0.85, rings);
+  float fibre = vnoise(vec2(axisC*1.4, acrossC*26.0));
+  float pore  = smoothstep(0.78, 0.95, vnoise(vec2(axisC*6.0, acrossC*60.0)));
   vec3 base;
   float gloss;
   if (variant < 0.5) {          // french-polished mahogany — bench, panelling
-    base = mix(${C3(P.mahoganyA)}, ${C3(P.mahoganyB)}, rings);
-    base = mix(base, ${C3(P.mahoganyC)}, smoothstep(0.55,0.95,fibre)*0.35);
-    base *= 0.9 + 0.2*wob;
-    base *= 1.0 - pore*0.28;
+    base = mix(${C3(P.mahoganyA)}, ${C3(P.mahoganyB)}, rings*0.55 + wob*0.30);
+    base = mix(base, ${C3(P.mahoganyC)}, smoothstep(0.62,0.95,fibre)*0.22);
+    base *= 0.94 + 0.12*wob;
+    base *= 1.0 - pore*0.18;
     gloss = 0.85;
-  } else {                      // waxed oak — pews, floor trims
-    base = mix(${C3(P.oakA)}, ${C3(P.oakB)}, rings);
-    base *= 0.88 + 0.24*fibre;
-    base *= 1.0 - pore*0.2;
-    gloss = 0.45;
+  } else {                      // warmer waxed mahogany — pews, doors
+    base = mix(${C3(P.oakA)}, ${C3(P.oakB)}, rings*0.5 + wob*0.35);
+    base *= 0.92 + 0.16*fibre;
+    base *= 1.0 - pore*0.15;
+    gloss = 0.6;
   }
   // carved profile shadow via authored v: darken toward panel edges
   float edge = min(vUv.y, 1.0 - vUv.y);
@@ -362,7 +396,10 @@ void main(){
 }
 `;
 
-// ── mosaic: gold-ground tesserae with grout, lunette figure + floor border ──
+// ── mosaic: tesserae with mortar joints.  Three works, as in the photos:
+//    0 — allegorical attic lunette (enthroned figure, orb, wings; FACELESS)
+//    1 — white floor-tile band at the bar
+//    2 — geometric diamond-lozenge panel behind the bench (non-identifying)
 const FRAG_MOSAIC = /* glsl */`
 ${'${COMMON}'}
 in vec3 vWp; in vec3 vN; in vec2 vUv; in vec4 vData;
@@ -370,57 +407,92 @@ out vec4 outColor;
 void main(){
   vec3 N = normalize(vN);
   float variant = vData.y;
-  // uv in centimetre-ish tesserae space
-  vec2 tp = vUv * vData.zw;              // zw carries the tile density per piece
+  // uv in tesserae space; zw carries the tile density per piece
+  vec2 tp = vUv * vData.zw;
   vec2 vf = vorF(tp);
   float grout = smoothstep(0.02, 0.14, vorEdge(tp));
   float id = vf.y;
   vec3 tess;
   if (variant < 0.5) {
-    // ── lunette: gold ground, laurel arcs, blue border bands ──
-    vec2 c = vUv - vec2(0.5, 0.0);
-    float rr = length(c*vec2(1.0, 1.0));
-    vec3 gold = mix(${C3(P.mosaicGoldA)}, ${C3(P.mosaicGoldB)}, id);
-    // each gold leaf tessera catches light on its own facet angle
-    float facet = 0.75 + 0.55*hash12(vec2(id*91.0, id*57.0));
-    gold *= facet;
-    tess = gold;
-    float band = smoothstep(0.475, 0.465, rr) - smoothstep(0.43, 0.42, rr);
-    tess = mix(tess, mix(${C3(P.mosaicBlue)}, ${C3(0x2e5478)}, id), band);
-    float band2 = smoothstep(0.415, 0.405, rr) - smoothstep(0.395, 0.385, rr);
-    tess = mix(tess, mix(${C3(P.mosaicOx)}, ${C3(0x8a3a28)}, id), band2);
-    // laurel garland: leaf lobes along an arc
-    float ang = atan(c.y, c.x);
-    float arcR = 0.30;
-    float leaf = smoothstep(0.030, 0.008, abs(rr - (arcR + 0.028*sin(ang*34.0))));
-    leaf *= step(0.12, ang) * step(ang, 3.02);
-    tess = mix(tess, mix(${C3(P.mosaicGreen)}, ${C3(0x49795c)}, id), leaf);
-    // radiating glory lines behind
-    float ray = smoothstep(0.65, 0.95, sin(ang*22.0)*0.5+0.5) * smoothstep(0.40, 0.18, rr) * (1.0-leaf);
-    tess = mix(tess, ${C3(P.mosaicIvory)}, ray*0.35);
-  } else {
-    // ── floor border: ivory field, guilloche of verde/oxblood, gold studs ──
-    float lane = vUv.y;                 // 0..1 across the band
-    vec3 ivory = mix(${C3(P.mosaicIvory)}, ${C3(0xcfc3a6)}, id);
+    // ── the lunette: sunset sky, tree line, enthroned figure with orb ──
+    vec2 c = (vUv - vec2(0.5, 0.5)) * 2.0;    // x -1..1, y 0 at spring line
+    float rr = length(c);
+    float h = c.y;                            // height within the lunette
+    // sky: gold sunset falling to orange at the tree line
+    tess = mix(${C3(P.lunOrange)}, ${C3(P.lunSunset)}, smoothstep(0.28, 0.75, h + fbm(c*3.0)*0.12));
+    tess = mix(tess, ${C3(0xead890)}, smoothstep(0.7, 1.0, h)*0.5);
+    // dark blue-green tree band with an irregular crown
+    float treeLine = 0.34 + 0.10*fbm(vec2(c.x*3.2, 1.7));
+    tess = mix(tess, ${C3(P.lunTree)}, smoothstep(treeLine + 0.05, treeLine - 0.03, h));
+    // olive foreground ground plane
+    tess = mix(tess, ${C3(P.lunOlive)}, smoothstep(0.20, 0.10, h));
+    // white throne bench behind the figure
+    float bench = smoothstep(0.09, 0.05, abs(h - 0.30)) * step(abs(c.x), 0.52);
+    tess = mix(tess, ${C3(P.lunErmine)}, bench*0.75);
+    // eagle wings: two dark-russet arcs behind the head
+    float wingR = length(vec2(abs(c.x) - 0.16, (h - 0.62)*1.6));
+    float wings = smoothstep(0.30, 0.26, wingR) - smoothstep(0.20, 0.16, wingR);
+    tess = mix(tess, ${C3(0x5e3226)}, clamp(wings, 0.0, 1.0)*step(0.55, h));
+    // enthroned figure: violet robe falling in a broad triangle
+    float robeW = mix(0.34, 0.10, smoothstep(0.14, 0.66, h));
+    float robe = smoothstep(robeW + 0.03, robeW - 0.01, abs(c.x + 0.02*sin(h*9.0)));
+    robe *= smoothstep(0.06, 0.12, h) * smoothstep(0.70, 0.62, h);
+    tess = mix(tess, mix(${C3(P.lunPurple)}, ${C3(0x3a3550)}, fbm(c*5.0)), robe);
+    // ermine-trimmed stole: two pale bands down the robe
+    float stole = smoothstep(0.030, 0.012, abs(abs(c.x) - 0.10)) * robe;
+    tess = mix(tess, ${C3(P.lunErmine)}, stole);
+    // head: featureless flesh oval (NO facial features), small crown glint
+    float headR = length(vec2(c.x, (h - 0.70)*1.5));
+    tess = mix(tess, ${C3(P.lunFlesh)}, smoothstep(0.075, 0.055, headR));
+    tess = mix(tess, ${C3(P.mosaicGoldB)}, smoothstep(0.022, 0.008, abs(h - 0.78))*step(abs(c.x), 0.055));
+    // the orb: pale glass sphere held to the right
+    float orbR = length(vec2(c.x - 0.26, (h - 0.40)*1.3));
+    tess = mix(tess, mix(${C3(0xbdc8cc)}, ${C3(0xe8f0f2)}, smoothstep(0.05, 0.0, orbR)), smoothstep(0.055, 0.04, orbR));
+    // kneeling attendants: russet mass left, blue-cloaked mass right
+    float att1 = smoothstep(0.30, 0.05, length(vec2((c.x + 0.52)*1.3, (h - 0.22)*1.9)));
+    tess = mix(tess, mix(${C3(P.lunRusset)}, ${C3(0x6e3a20)}, fbm(c*6.0 + 2.0)), att1*0.9);
+    float att2 = smoothstep(0.30, 0.05, length(vec2((c.x - 0.52)*1.3, (h - 0.22)*1.9)));
+    tess = mix(tess, mix(${C3(0x3a4a6a)}, ${C3(0x7c3428)}, smoothstep(0.3,0.7,fbm(c*4.0+7.0))), att2*0.9);
+    // rim: single gold band following the arch
+    tess = mix(tess, mix(${C3(P.mosaicGoldA)}, ${C3(P.mosaicGoldB)}, id), smoothstep(0.045, 0.015, abs(rr - 0.94)));
+  } else if (variant < 1.5) {
+    // ── floor band at the bar: small white tile, grey grout, red key line ──
+    vec3 ivory = mix(${C3(P.mosaicIvory)}, ${C3(0xd7cdb4)}, id);
     tess = ivory;
-    float wave = sin(vUv.x*vData.z*0.42 + sin(lane*6.28)*0.8);
-    float g1 = smoothstep(0.30, 0.20, abs(lane - 0.5 - 0.17*wave));
-    tess = mix(tess, mix(${C3(P.mosaicGreen)}, ${C3(0x3d6a50)}, id), g1);
-    float g2 = smoothstep(0.10, 0.045, abs(lane - 0.5 + 0.17*wave));
-    tess = mix(tess, mix(${C3(P.mosaicOx)}, ${C3(0x84382a)}, id), g2);
-    float stud = step(0.87, sin(vUv.x*vData.z*0.42)*0.5+0.5) * smoothstep(0.10, 0.02, abs(lane-0.5));
-    tess = mix(tess, mix(${C3(P.mosaicGoldA)}, ${C3(P.mosaicGoldB)}, id), stud);
-    float rim = smoothstep(0.05,0.02,lane) + smoothstep(0.95,0.98,lane);
-    tess = mix(tess, ${C3(P.mosaicBlue)}, rim*0.8);
+    float lane = vUv.y;
+    float border = smoothstep(0.16, 0.13, lane) + smoothstep(0.84, 0.87, lane);
+    tess = mix(tess, mix(${C3(P.mosaicOx)}, ${C3(0x84382a)}, id), border);
+    float key = step(0.80, sin(vUv.x*vData.z*0.55)*0.5+0.5) * smoothstep(0.10, 0.03, abs(lane-0.5));
+    tess = mix(tess, ${C3(P.marbleVerdeA)}, key*0.85);
+  } else {
+    // ── diamond-lozenge panel: concentric rhombi, gold ground.  Purely
+    //    geometric — deliberately carries no name, arms or seal. ──
+    vec2 c = abs(vUv - 0.5) * 2.0;
+    float d = c.x + c.y*1.15;                    // L1 diamond radius
+    vec3 gold = mix(${C3(P.mosaicGoldA)}, ${C3(P.mosaicGoldB)}, id);
+    float facet = 0.88 + 0.30*hash12(vec2(id*91.0, id*57.0));
+    tess = gold * facet;
+    // border frames near the panel edge
+    float e = max(c.x, c.y);
+    tess = mix(tess, mix(${C3(P.mosaicGreen)}, ${C3(0x49795c)}, id), smoothstep(0.025,0.008,abs(e-0.90)));
+    // concentric diamond REGIONS (filled bands, as the photo's lozenge)
+    float band1 = smoothstep(0.74, 0.72, d) - smoothstep(0.58, 0.56, d);
+    tess = mix(tess, mix(${C3(P.mosaicGreen)}, ${C3(0x2e4636)}, id), clamp(band1, 0.0, 1.0));
+    float band2 = smoothstep(0.58, 0.56, d) - smoothstep(0.46, 0.44, d);
+    tess = mix(tess, mix(${C3(P.mosaicIvory)}, ${C3(0xd7cdb4)}, id), clamp(band2, 0.0, 1.0));
+    float band3 = smoothstep(0.46, 0.44, d) - smoothstep(0.30, 0.28, d);
+    tess = mix(tess, mix(${C3(P.mosaicOx)}, ${C3(0x84382a)}, id), clamp(band3, 0.0, 1.0));
+    tess = mix(tess, mix(${C3(P.mosaicBlue)}, ${C3(0x35567a)}, id), step(d, 0.29));
+    tess = mix(tess, mix(${C3(P.mosaicGoldA)}, ${C3(P.mosaicGoldB)}, id) * 1.1, smoothstep(0.13, 0.10, d));
   }
-  tess *= 0.55 + 0.45*grout;                                 // grout shadow
-  vec3 groutC = ${C3(0x8d8272)} * 0.55;
+  tess *= 0.6 + 0.4*grout;                                   // mortar shadow
+  vec3 groutC = ${C3(0x9a9188)} * 0.6;
   vec3 alb = mix(groutC, tess, grout);
-  // tesserae facets: perturb normal per cell for glittering gold
+  // tesserae facets: perturb normal per cell so gold glitters
   vec2 fh = hash22(vec2(id*127.0, id*311.0)) - 0.5;
-  vec3 Np = normalize(N + vec3(fh.x, fh.y, fh.x)*0.16*grout);
-  float spec = (variant < 0.5 ? 0.85 : 0.5) * grout;
-  vec3 col = shade(alb, Np, vWp, spec, 0.22, 1.0);
+  vec3 Np = normalize(N + vec3(fh.x, fh.y, fh.x)*0.15*grout);
+  float spec = (variant < 1.5 ? 0.55 : 0.85) * grout;
+  vec3 col = shade(alb, Np, vWp, spec, 0.24, 1.0);
   outColor = vec4(col, 1.0);
 }
 `;
@@ -428,42 +500,18 @@ void main(){
 // ── aged brass / gilt: patina in crevices, strong warm fresnel ──────────────
 const FRAG_BRASS = /* glsl */`
 ${'${COMMON}'}
-uniform sampler2D uSealTex;
 in vec3 vWp; in vec3 vN; in vec2 vUv; in vec4 vData;
 out vec4 outColor;
 void main(){
   vec3 N = normalize(vN);
-  float seed = vData.x, isSeal = vData.y;
+  float seed = vData.x;
   vec3 q = vWp*7.0 + seed;
   float pat = fbm3(q*0.9);
   float tarn = smoothstep(0.42, 0.85, fbm3(q*2.1 + 4.0));
   vec3 base = mix(${C3(P.brassB)}, ${C3(P.brassA)}, tarn*0.8);
   base = mix(base, ${C3(0x3e2c12)}, smoothstep(0.65,0.95,pat)*0.35);
-  float engrave = 0.0;
-  if (isSeal > 0.5) {
-    // scales of justice in relief + ring text "THE COURT" from the mask
-    vec2 c = vUv - 0.5;
-    float r = length(c);
-    float ring = smoothstep(0.012,0.004,abs(r-0.46)) + smoothstep(0.010,0.003,abs(r-0.335));
-    float mask = texture(uSealTex, vUv).r;              // letters, generated in-file
-    // beam
-    float beam = smoothstep(0.012,0.004, abs(c.y-0.10)) * step(abs(c.x), 0.21);
-    // column + plinth
-    float col_ = smoothstep(0.016,0.006, abs(c.x)) * step(-0.20, c.y) * step(c.y, 0.115);
-    float plinth = smoothstep(0.02,0.008, abs(c.y+0.215)) * step(abs(c.x), 0.10);
-    // chains
-    float ch1 = smoothstep(0.008,0.002, abs(length(c-vec2(-0.21,0.10))*0.0 + abs((c.x+0.21)*0.9) + max(0.0,(0.10-c.y))*0.16 - 0.02));
-    // pans: shallow arcs
-    float pan1 = smoothstep(0.012,0.005, abs(length((c-vec2(-0.21,-0.05))*vec2(1.0,2.2)) - 0.085)) * step(c.y, -0.045);
-    float pan2 = smoothstep(0.012,0.005, abs(length((c-vec2( 0.21,-0.05))*vec2(1.0,2.2)) - 0.085)) * step(c.y, -0.045);
-    float str1 = smoothstep(0.006,0.002, abs((c.x+0.21) + (c.y-0.10)*0.28)) * step(-0.05,c.y)*step(c.y,0.10)*step(abs(c.x+0.21),0.06);
-    float str2 = smoothstep(0.006,0.002, abs((c.x-0.21) - (c.y-0.10)*0.28)) * step(-0.05,c.y)*step(c.y,0.10)*step(abs(c.x-0.21),0.06);
-    engrave = clamp(ring + mask + beam + col_ + plinth + pan1 + pan2 + str1 + str2 + ch1*0.0, 0.0, 1.0);
-    base = mix(base, base*0.42, engrave);                       // recessed dark
-    base = mix(base, ${C3(P.brassHi)}, engrave*0.0);
-  }
   float mn = fbm3(q*3.0);
-  vec3 Np = normalize(N + (mn-0.5)*0.10*vec3(1.0,0.6,1.0) + N*engrave*0.0);
+  vec3 Np = normalize(N + (mn-0.5)*0.10*vec3(1.0,0.6,1.0));
   float spec = mix(1.0, 0.35, tarn);
   vec3 col = shade(base, Np, vWp, spec, mix(0.10, 0.42, tarn), 1.0);
   // metals tint their reflections
@@ -486,25 +534,28 @@ void main(){
   float mottle = fbm(lp*0.5 + 7.0);
   vec3 base;
   float spec;
-  if (variant < 0.5) {          // oxblood chair leather / desk inlay
+  if (variant < 0.5) {          // black chair leather (the bench chairs)
     base = mix(${C3(P.leatherB)}, ${C3(P.leatherA)}, mottle);
-    base *= 1.0 - crease*0.38;
-    base = mix(base, ${C3(0x7c3428)}, smoothstep(0.72,0.95,mottle)*0.3);   // worn sheen patches
-    spec = 0.5;
-  } else if (variant < 1.5) {   // carpet runner — matte wool, faint pattern
+    base *= 1.0 - crease*0.45;
+    base = mix(base, ${C3(0x3c4046)}, smoothstep(0.70,0.95,mottle)*0.35);  // worn sheen patches
+    spec = 0.65;
+  } else if (variant < 1.5) {   // grey-blue carpet — matte wool, faint mottle
     base = mix(${C3(P.carpetA)}, ${C3(P.carpetB)}, mottle);
-    float fig = smoothstep(0.4,0.6, sin(vUv.x*90.0)*sin(vUv.y*220.0)*0.5+0.5);
-    base = mix(base, ${C3(0x6e3424)}, fig*0.12);
-    float bord = smoothstep(0.055,0.045,min(vUv.y,1.0-vUv.y));
-    base = mix(base, ${C3(0x8a6a34)}, bord*0.35);
-    base *= 0.9 + 0.2*vnoise(lp*3.0);
-    spec = 0.05;
-  } else {                      // book cloth covers — colour drift per book
+    float fig = smoothstep(0.4,0.6, sin(vUv.x*140.0)*sin(vUv.y*300.0)*0.5+0.5);
+    base = mix(base, ${C3(0x707d76)}, fig*0.10);
+    base *= 0.92 + 0.16*vnoise(lp*3.0);
+    spec = 0.04;
+  } else if (variant < 2.5) {   // book cloth covers — colour drift per book
     vec3 shelf = mix(${C3(0x4e2a1c)}, ${C3(0x2e3a2e)}, step(0.5, fract(seed*3.7)));
     shelf = mix(shelf, ${C3(0x54321e)}, fract(seed*7.3)*0.5);
     base = shelf * (0.85 + 0.3*mottle);
     base *= 1.0 - crease*0.2;
     spec = 0.25;
+  } else {                      // oxblood leather desk inlay
+    base = mix(${C3(0x62241d)}, ${C3(0x3c1512)}, mottle);
+    base *= 1.0 - crease*0.3;
+    base = mix(base, ${C3(0x7c3428)}, smoothstep(0.72,0.95,mottle)*0.3);
+    spec = 0.5;
   }
   vec3 Np = normalize(N + (fbm(lp*2.0)-0.5)*0.10);
   vec3 col = shade(base, Np, vWp, spec, 0.42, 0.92);
@@ -577,16 +628,17 @@ ${'${COMMON}'}
 in vec3 vWp; in vec3 vN; in vec2 vUv; in vec4 vData;
 out vec4 outColor;
 void main(){
-  // sky gradient seen through old glass: bright zenith, warm haze at sill
+  // as the hero photo: luminous white blinds over the lower sash, deep
+  // blue-violet stained glass in the arch above the transom
   float h = clamp(vUv.y, 0.0, 1.0);
-  vec3 sky = mix(vec3(2.6, 2.9, 3.4), vec3(6.5, 7.4, 9.0), h*h);
-  sky = mix(sky, vec3(7.5, 6.4, 4.6), (1.0-h)*(1.0-h)*0.55);          // low warm band
-  // wobbly antique glass: slight brightness ripple
-  sky *= 0.92 + 0.14*vnoise(vUv*vec2(26.0, 30.0) + vData.x);
-  // soft silhouette of a far façade line to break the void
-  float far_ = smoothstep(0.30, 0.28, h) * smoothstep(0.55, 0.9, vnoise(vec2(vUv.x*7.0 + vData.x, 1.3)));
-  sky *= 1.0 - far_*0.35;
-  outColor = vec4(sky * 1.35, 1.0);
+  vec3 blind = vec3(5.2, 5.1, 4.7);
+  blind *= 0.90 + 0.10*sin(vUv.y*90.0 + vData.x);            // slat ripple
+  blind *= 0.94 + 0.06*vnoise(vUv*vec2(9.0, 3.0) + vData.x);
+  vec3 stain = mix(vec3(0.7, 0.9, 2.6), vec3(1.7, 1.1, 2.9), vnoise(vUv*vec2(7.0,5.0)+vData.x));
+  stain *= 0.75 + 0.45*vnoise(vUv*vec2(22.0, 26.0) + vData.x*3.0);
+  float arch = smoothstep(0.70, 0.74, h);
+  vec3 sky = mix(blind, stain, arch);
+  outColor = vec4(sky * 1.25, 1.0);
 }
 `;
 
@@ -597,12 +649,17 @@ in vec3 vWp; in vec3 vN; in vec2 vUv; in vec4 vData;
 out vec4 outColor;
 void main(){
   vec3 N = normalize(vN);
-  float kind = vData.y;   // 0 = fixture globe (house), 1 = bench lamp shade (amp), 2 = lectern pendant
+  float kind = vData.y;   // 0 marquee bulb (house) · 1 bench lamp shade (amp) · 2 lectern pendant · 3 laylight panel
   vec3 col;
   if (kind < 0.5) {
-    vec3 warm = vec3(1.0, 0.66, 0.34);
+    vec3 warm = vec3(1.0, 0.72, 0.38);
     float glow = uHouse;
-    col = warm * (0.18 + 5.2*glow) * (0.75 + 0.25*vUv.y);
+    col = warm * (0.15 + 7.0*glow);
+  } else if (kind > 2.5) {
+    // laylight: broad cool daylight panel behind ornamented frames
+    vec3 day = vec3(0.88, 0.92, 1.0);
+    float pane = 0.88 + 0.12*smoothstep(0.02, 0.06, min(fract(vUv.x*6.0), fract(vUv.y*4.0)));
+    col = day * 3.1 * pane * (0.92 + 0.08*vnoise(vUv*14.0));
   } else if (kind < 1.5) {
     // brass-banker's-lamp green glass: transmits green, hot rim below
     vec3 green = vec3(0.10, 0.55, 0.28);
@@ -636,17 +693,18 @@ out vec4 outColor;
 void main(){
   vec3 V = normalize(vWp - uCamPos);
   float along = vLoc.y;
-  // beam fades with travel and toward its cross-section rim
-  float rim = smoothstep(0.0, 0.24, vLoc.x) * smoothstep(1.0, 0.76, vLoc.x) * vLoc.z;
-  float body = exp(-along*1.9);
+  // beam fades with travel and toward the sheet edges
+  float rim = pow(sin(3.14159*clamp(vLoc.x, 0.0, 1.0)), 1.5) * vLoc.z;
+  float body = exp(-along*2.1);
   // drifting dust density: slow diagonal churn through the beam
   vec3 dp = vWp*vec3(0.5, 0.35, 0.5) + vec3(uTime*0.010, -uTime*0.017, uTime*0.006);
   float dust = fbm3(dp*2.6);
   dust = 0.35 + 0.65*smoothstep(0.30, 0.78, dust);
-  // stronger when looking up-beam into the light
+  // stronger when looking up-beam into the light; never wash the lens
   float toward = pow(max(dot(-V, uSunDir), 0.0), 2.5);
-  float i = rim * body * dust * (0.35 + 0.9*toward);
-  vec3 col = uSunCol * vec3(1.0, 0.93, 0.80) * i * 0.85;
+  float nearF = smoothstep(0.6, 2.4, length(vWp - uCamPos));
+  float i = rim * body * dust * (0.30 + 0.80*toward) * nearF;
+  vec3 col = uSunCol * vec3(1.0, 0.93, 0.80) * i * 0.45;
   outColor = vec4(col, 1.0);
 }
 `;
@@ -833,7 +891,7 @@ class PresenceScene {
     this.bakeMs = 0;
     this.fps = 0;
     this._fpsAcc = 0; this._fpsN = 0;
-    this._lampPos = new THREE.Vector3(1.25, 3.02, -7.16);
+    this._lampPos = new THREE.Vector3(1.25, 2.72, -7.41);
     this._lectPos = new THREE.Vector3(0, 3.4, 1.9);
     this._frozen = false;
   }
@@ -883,9 +941,9 @@ class PresenceScene {
     this.rig = new THREE.Group();       this.rig.name = 'dynamicRig';
     scene.add(this.staticEnv, this.rig);
 
-    const camera = this.camera = new THREE.PerspectiveCamera(52, innerWidth / innerHeight, 0.1, 80);
-    camera.position.set(0.42, 1.66, 3.15);          // the advocate, at the podium
-    camera.lookAt(0.0, 2.45, -8.6);
+    const camera = this.camera = new THREE.PerspectiveCamera(54, innerWidth / innerHeight, 0.1, 80);
+    camera.position.set(0.42, 1.78, 3.30);          // the advocate, at the podium
+    camera.lookAt(0.0, 3.15, -8.6);                 // bench + aedicule + vault in frame
 
     // ── shared uniforms (one object → every material updates at once) ──────
     const G = this.G = {
@@ -915,38 +973,11 @@ class PresenceScene {
       ...opts.mat,
     });
 
-    // seal text ring — generated in-file (data, not an external asset)
-    const sealCanvas = document.createElement('canvas');
-    sealCanvas.width = sealCanvas.height = 512;
-    {
-      const cx = sealCanvas.getContext('2d');
-      cx.fillStyle = '#000'; cx.fillRect(0, 0, 512, 512);
-      cx.fillStyle = '#fff';
-      cx.font = 'bold 44px Georgia, serif';
-      cx.textAlign = 'center'; cx.textBaseline = 'middle';
-      const ringText = (txt, r, a0, a1) => {
-        const span = a1 - a0;
-        for (let i = 0; i < txt.length; i++) {
-          const a = a0 + span * (i + 0.5) / txt.length;
-          cx.save();
-          cx.translate(256 + Math.cos(a) * r, 256 + Math.sin(a) * r);
-          cx.rotate(a + Math.PI / 2);
-          cx.fillText(txt[i], 0, 0);
-          cx.restore();
-        }
-      };
-      ringText('THE COURT', 205, -Math.PI * 0.82, -Math.PI * 0.18);
-      ringText('SINE TIMORE', 205, Math.PI * 0.22, Math.PI * 0.78);  // generic motto: "without fear"
-      cx.beginPath(); cx.arc(256, 256, 8, 0, 7); cx.fill();
-    }
-    const sealTex = new THREE.CanvasTexture(sealCanvas);
-    sealTex.colorSpace = THREE.NoColorSpace;
-
     const MATS = this.MATS = {
       marble:  mkMat(FRAG_MARBLE),
       wood:    mkMat(FRAG_WOOD),
       mosaic:  mkMat(FRAG_MOSAIC),
-      brass:   mkMat(FRAG_BRASS, { uSealTex: { value: sealTex } }),
+      brass:   mkMat(FRAG_BRASS),
       leather: mkMat(FRAG_LEATHER),
       plaster: mkMat(FRAG_PLASTER),
       paper:   mkMat(FRAG_PAPER),
@@ -998,6 +1029,7 @@ class PresenceScene {
       renderer.setSize(innerWidth, innerHeight);
       const pr = renderer.getPixelRatio();
       this.sceneRT.setSize(innerWidth * pr, innerHeight * pr);
+      if (this._moteMat) this._moteMat.uniforms.uPix.value = innerHeight * pr * 0.5;
     });
 
     await setLoad(1.0, 'court is assembled');
@@ -1010,214 +1042,251 @@ class PresenceScene {
   _buildRoom(MATS) {
     const rng = mulberry32(4021);
     const marble = new Merger(), wood = new Merger(), plaster = new Merger(),
-          brass = new Merger(), mosaic = new Merger(), glass = new Merger();
+          brass = new Merger(), mosaic = new Merger(), glass = new Merger(),
+          lampGlass = new Merger();
     const { x0, x1, y0, y1, z0, z1 } = ROOM;
     const W = x1 - x0, D = z1 - z0;
+    const { ent0, ent1, att1, cor1, flatY, coveW } = CEIL;
 
-    // ── floor: pavonazzo field + verde border bands + mosaic border ────────
-    marble.add(box(W - 3.0, 0.2, D - 3.0), mat((x0+x1)/2, -0.1, (z0+z1)/2), [0, 0, 0, 0]);
-    occlude((x0+x1)/2, -0.1, (z0+z1)/2, W, 0.2, D);
-    // mosaic border ring (four strips, 1.05 m wide)
-    const bw = 1.05, inX0 = x0 + 0.45, inX1 = x1 - 0.45, inZ0 = z0 + 0.45, inZ1 = z1 - 0.45;
-    mosaic.add(box(inX1 - inX0, 0.202, bw), mat((x0+x1)/2, -0.1, inZ0 + bw/2), [0, 1, 46, 1]);
-    mosaic.add(box(inX1 - inX0, 0.202, bw), mat((x0+x1)/2, -0.1, inZ1 - bw/2), [0, 1, 46, 1]);
-    mosaic.add(box(bw, 0.202, inZ1 - inZ0 - 2*bw), mat(inX0 + bw/2, -0.1, (z0+z1)/2, 0, Math.PI/2, 0), [0, 1, 64, 1]);
-    mosaic.add(box(bw, 0.202, inZ1 - inZ0 - 2*bw), mat(inX1 - bw/2, -0.1, (z0+z1)/2, 0, Math.PI/2, 0), [0, 1, 64, 1]);
-    // verde edging just inside the mosaic
-    for (const [cx, cz, sx, sz] of [
-      [(x0+x1)/2, inZ0 + bw + 0.12, inX1-inX0-2*bw, 0.24], [(x0+x1)/2, inZ1 - bw - 0.12, inX1-inX0-2*bw, 0.24],
-      [inX0 + bw + 0.12, (z0+z1)/2, 0.24, inZ1-inZ0-2*bw-0.48], [inX1 - bw - 0.12, (z0+z1)/2, 0.24, inZ1-inZ0-2*bw-0.48],
-    ]) marble.add(box(sx, 0.204, sz), mat(cx, -0.098, cz), [1, 2, 0, 0]);
+    // ── floor slab; carpet, tile band and curbs dress it (furniture pass) ──
+    marble.add(box(W, 0.2, D), mat(0, -0.1, 0), [0, 0, 0, 0]);
+    occlude(0, -0.1, 0, W, 0.2, D);
+    mosaic.add(box(W - 1.0, 0.204, 0.62), mat(0, -0.098, 3.62), [0, 1, 340, 10]);
+    for (const dz of [-0.42, 0.42])
+      marble.add(box(W - 1.0, 0.206, 0.14), mat(0, -0.097, 3.62 + dz), [1, 1, 0, 0]);
 
-    // ── walls: marble wainscot to 2.6, plaster field above, pilaster rhythm ─
-    const wainH = 2.6, wainT = 0.22;
-    const wallSegs = [
-      // [wall axis, fixed coord, from, to, normal facing +?]
-      ['z', z0, x0, x1],        // back wall (behind bench)
-      ['z', z1, x0, x1],        // rear wall (behind gallery)
-      ['x', x1, z0, z1],        // right wall
+    // ── walls: full-height book-matched Pavonazzo over a verde plinth,
+    //    arcade of engaged columns → entablature → attic with herms →
+    //    bracketed cornice (the hero photo's wall section) ──────────────────
+    const bayPitch = 2.85;
+    const wallDefs = [
+      { axis: 'z', at: z0, a0: x0, a1: x1, sign: 1 },   // behind the bench
+      { axis: 'z', at: z1, a0: x0, a1: x1, sign: -1 },  // behind the gallery
+      { axis: 'x', at: x1, a0: z0, a1: z1, sign: -1 },  // right wall
+      { axis: 'x', at: x0, a0: z0, a1: z1, sign: 1 },   // window wall
     ];
-    for (const [axis, at, a0, a1] of wallSegs) {
+    for (const wd of wallDefs) {
+      const { axis, at, a0, a1, sign } = wd;
       const len = a1 - a0, mid = (a0 + a1) / 2;
-      if (axis === 'z') {
-        marble.add(box(len, wainH, wainT), mat(mid, wainH/2, at + (at < 0 ? wainT/2 : -wainT/2)), [rng()*9, 0, 0, 0]);
-        plaster.add(box(len, y1 - wainH, 0.16), mat(mid, wainH + (y1-wainH)/2, at + (at < 0 ? 0.08 : -0.08)), [0,0,0,0]);
-        occlude(mid, y1/2, at, len, y1*2, 0.3);
-      } else {
-        marble.add(box(wainT, wainH, len), mat(at - wainT/2, wainH/2, mid), [rng()*9, 0, 0, 0]);
-        plaster.add(box(0.16, y1 - wainH, len), mat(at - 0.08, wainH + (y1-wainH)/2, mid), [0,0,0,0]);
-        occlude(at, y1/2, mid, 0.3, y1*2, len);
-      }
-    }
-    // window wall (-X): built in segments around the three openings
-    {
-      const at = x0;
-      const zsEdges = [z0];
-      for (const wnd of WINDOWS) { zsEdges.push(wnd.z - wnd.w/2, wnd.z + wnd.w/2); }
-      zsEdges.push(z1);
-      for (let i = 0; i < zsEdges.length; i += 2) {
-        const a = zsEdges[i], b = zsEdges[i + 1];
-        const mid = (a + b) / 2, len = b - a;
-        marble.add(box(wainT, wainH, len), mat(at + wainT/2, wainH/2, mid), [rng()*9, 0, 0, 0]);
-        plaster.add(box(0.30, y1 - wainH, len), mat(at + 0.15, wainH + (y1-wainH)/2, mid), [0,0,0,0]);
-        occlude(at + 0.15, y1/2, mid, 0.34, y1*2, len);
-      }
-      for (const wnd of WINDOWS) {
-        const topY = wnd.spring + wnd.r;
-        // solid below sill and above arch
-        marble.add(box(wainT, wnd.sill, wnd.w), mat(at + wainT/2, wnd.sill/2, wnd.z), [rng()*9, 0, 0, 0]);
-        occlude(at + 0.15, wnd.sill/2, wnd.z, 0.34, wnd.sill, wnd.w);
-        plaster.add(box(0.30, y1 - topY, wnd.w), mat(at + 0.15, topY + (y1-topY)/2, wnd.z), [0,0,0,0]);
-        occlude(at + 0.15, topY + (y1-topY)/2, wnd.z, 0.34, y1 - topY, wnd.w);
-        // occlude the small corners beside the arch (approximate with two boxes)
-        occlude(at + 0.15, wnd.spring + wnd.r*0.82, wnd.z - wnd.w*0.38, 0.34, wnd.r*0.5, wnd.w*0.24);
-        occlude(at + 0.15, wnd.spring + wnd.r*0.82, wnd.z + wnd.w*0.38, 0.34, wnd.r*0.5, wnd.w*0.24);
-        // deep marble reveal
-        const rev = 0.5;
-        marble.add(box(rev, 0.16, wnd.w + 0.3), mat(at + rev/2, wnd.sill - 0.08, wnd.z), [rng()*9, 0, 0, 0]); // sill slab
-        marble.add(box(rev, topY - wnd.sill, 0.14), mat(at + rev/2, (wnd.sill+topY)/2, wnd.z - wnd.w/2 - 0.07), [rng()*9, 0, 0, 0]);
-        marble.add(box(rev, topY - wnd.sill, 0.14), mat(at + rev/2, (wnd.sill+topY)/2, wnd.z + wnd.w/2 + 0.07), [rng()*9, 0, 0, 0]);
-        // glass sheet + bronze mullions
-        const gw = wnd.w, gh = topY - wnd.sill;
-        const gplane = new THREE.PlaneGeometry(gw, gh, 1, 1);
-        glass.add(gplane, mat(at + 0.06, wnd.sill + gh/2, wnd.z, 0, Math.PI/2, 0), [rng()*9, 0, 0, 0]);
-        for (let i = 0; i <= 3; i++)   // vertical bronze mullions
-          brass.add(box(0.05, gh, 0.045), mat(at + 0.10, wnd.sill + gh/2, wnd.z - gw/2 + (gw/3)*i), [rng()*9, 0, 0, 0]);
-        for (let j = 1; j <= 4; j++)   // transoms
-          brass.add(box(0.05, 0.045, gw), mat(at + 0.10, wnd.sill + (gh/5)*j, wnd.z), [rng()*9, 0, 0, 0]);
-      }
-    }
-
-    // ── wainscot panel rhythm: raised marble panels + cap/base mouldings ────
-    const panelPitch = 1.62;
-    for (const [axis, at, a0, a1, sign] of [
-      ['z', z0 + wainT, x0 + 0.4, x1 - 0.4, 1], ['z', z1 - wainT, x0 + 0.4, x1 - 0.4, -1],
-      ['x', x1 - wainT, z0 + 0.4, z1 - 0.4, -1],
-    ]) {
-      const n = Math.floor((a1 - a0) / panelPitch);
-      for (let i = 0; i < n; i++) {
-        const c = a0 + (i + 0.5) * ((a1 - a0) / n);
-        const pw = (a1 - a0) / n - 0.30;
-        const m = axis === 'z' ? mat(c, 1.45, at + sign*0.03, 0, 0, 0, pw, 1.7, 0.06)
-                               : mat(at + sign*0.03, 1.45, c, 0, Math.PI/2, 0, pw, 1.7, 0.06);
-        marble.add(box(1, 1, 1), m, [rng()*9, 0, 0, 0]);
-      }
-      moulding(marble, axis === 'z' ? (a0+a1)/2 : at + sign*0.05, 0, axis === 'z' ? at + sign*0.05 : (a0+a1)/2,
-        a1 - a0, axis === 'z' ? 'x' : 'z',
-        [[2.56, 0.09, 0.16], [2.475, 0.05, 0.12], [0.10, 0.22, 0.14]], [rng()*9, 0, 0, 0]);
-    }
-
-    // ── pilasters + cornice + coffered ceiling ──────────────────────────────
-    const cornY = 7.15;
-    for (const [axis, at, a0, a1, sign] of [
-      ['x', x1, z0, z1, -1], ['x', x0, z0, z1, 1],
-    ]) {
-      const n = 5;
-      for (let i = 0; i <= n; i++) {
-        const c = a0 + i * ((a1 - a0) / n);
-        if (axis === 'x' && at === x0) {  // skip pilasters that would cross windows
-          if (WINDOWS.some(w => Math.abs(c - w.z) < w.w/2 + 0.35)) continue;
+      const T = 0.24;
+      const isWinWall = axis === 'x' && at === x0;
+      const place = (c, y, wAlong, h, depth, data, mg = marble) => {
+        const m = axis === 'z'
+          ? mat(c, y, at + sign * depth / 2, 0, 0, 0, wAlong, h, depth)
+          : mat(at + sign * depth / 2, y, c, 0, Math.PI / 2, 0, wAlong, h, depth);
+        mg.add(box(1, 1, 1), m, data);
+      };
+      // backing sheet to attic top (window wall: in segments around openings)
+      if (isWinWall) {
+        const edges = [a0];
+        for (const w of WINDOWS) edges.push(w.z - 0.95, w.z + 0.95);
+        edges.push(a1);
+        for (let s = 0; s < edges.length; s += 2) {
+          const sa = edges[s], sb = edges[s + 1];
+          place((sa + sb) / 2, att1 / 2, sb - sa, att1, T, [rng() * 9, 0, sb - sa, att1]);
+          occlude(at + 0.17, y1 / 2, (sa + sb) / 2, 0.6, y1 * 2, sb - sa);
         }
-        plaster.add(box(0.5, cornY - wainH, 0.13), mat(at + sign*0.145, wainH + (cornY-wainH)/2, c, 0, Math.PI/2, 0), [0,0,0,0]);
-        brass.add(box(0.13, 0.34, 0.56), mat(at + sign*0.16, cornY - 0.35, c, 0, 0, 0), [rng()*9, 0, 0, 0]); // gilt capital block
+        for (const w of WINDOWS) {
+          const topY = w.spring + w.r;
+          place(w.z, w.sill / 2, 1.9, w.sill, T, [rng() * 9, 0, 0, 0]);
+          occlude(at + 0.17, w.sill / 2, w.z, 0.6, w.sill, 1.9);
+          place(w.z, (topY + att1) / 2, 1.9, att1 - topY, T, [rng() * 9, 0, 0, 0]);
+          occlude(at + 0.17, (topY + att1) / 2, w.z, 0.6, att1 - topY, 1.9);
+          occlude(at + 0.17, w.spring + w.r * 0.85, w.z - w.w * 0.40, 0.6, w.r * 0.45, w.w * 0.22);
+          occlude(at + 0.17, w.spring + w.r * 0.85, w.z + w.w * 0.40, 0.6, w.r * 0.45, w.w * 0.22);
+        }
+      } else {
+        place(mid, att1 / 2, len, att1, T, [rng() * 9, 0, len, att1]);
+        if (axis === 'z') occlude(mid, y1 / 2, at, len, y1 * 2, 0.5);
+        else occlude(at, y1 / 2, mid, 0.5, y1 * 2, len);
       }
-    }
-    // cornice run: stacked mouldings + dentils on all four walls
-    for (const [axis, at, a0, a1, sign] of [
-      ['z', z0, x0, x1, 1], ['z', z1, x0, x1, -1], ['x', x1, z0, z1, -1], ['x', x0, z0, z1, 1],
-    ]) {
-      const mid = (a0 + a1)/2, len = a1 - a0;
-      moulding(plaster, axis === 'z' ? mid : at + sign*0.26, cornY, axis === 'z' ? at + sign*0.26 : mid,
+      // verde plinth
+      place(mid, 0.26, len, 0.52, T + 0.06, [rng() * 9, 2, 0, 0]);
+      // arcade bays: book-matched panels + engaged columns with capitals
+      const n = Math.max(3, Math.round(len / bayPitch));
+      const bw = len / n;
+      for (let i = 0; i < n; i++) {
+        const c = a0 + (i + 0.5) * bw;
+        const nearWin = isWinWall && WINDOWS.some(w => Math.abs(c - w.z) < 1.25);
+        if (!nearWin) {
+          place(c, 2.85, bw - 0.78, 4.1, T + 0.03, [rng() * 9, 0, bw - 0.78, 4.1]);
+          place(c, 5.02, bw - 0.66, 0.14, T + 0.05, [rng() * 9, 0, 0, 0]);
+          place(c, 0.78, bw - 0.66, 0.14, T + 0.05, [rng() * 9, 0, 0, 0]);
+        }
+        const pj = a0 + i * bw;
+        const pjNearWin = isWinWall && WINDOWS.some(w => Math.abs(pj - w.z) < 1.35);
+        if (i > 0 && !pjNearWin) {
+          const off = T + 0.12;
+          const pm = (g, y, dat, mg = marble) => mg.add(g, axis === 'z'
+            ? mat(pj, y, at + sign * off) : mat(at + sign * off, y, pj), dat);
+          pm(cyl(0.21, 0.24, ent0 - 0.52, 14), 0.52 + (ent0 - 0.52) / 2, [rng() * 9, 0, 0, 0]);
+          pm(cyl(0.30, 0.22, 0.40, 14), ent0 - 0.24, [0, 0, 0, 0], plaster);   // carved cream capital
+          const mb = axis === 'z'
+            ? mat(pj, 0.40, at + sign * off, 0, 0, 0, 0.56, 0.26, 0.56)
+            : mat(at + sign * off, 0.40, pj, 0, 0, 0, 0.56, 0.26, 0.56);
+          marble.add(box(1, 1, 1), mb, [rng() * 9, 2, 0, 0]);
+        }
+      }
+      // entablature: marble architrave, plaster frieze + cornice-ette
+      place(mid, ent0 + 0.16, len, 0.34, T + 0.16, [rng() * 9, 0, 0, 0]);
+      place(mid, ent0 + 0.50, len, 0.34, T + 0.10, [0, 0, 0, 0], plaster);
+      place(mid, ent1 - 0.07, len, 0.18, T + 0.24, [0, 0, 0, 0], plaster);
+      // attic: plaster field with herm posts continuing the bay rhythm
+      place(mid, (ent1 + att1) / 2, len, att1 - ent1, T - 0.06, [0, 0, 0, 0], plaster);
+      for (let i = 1; i < n; i++) {
+        const pj = a0 + i * bw;
+        const mh = axis === 'z'
+          ? mat(pj, (ent1 + att1) / 2, at + sign * (T + 0.06), 0, 0, 0, 0.34, att1 - ent1, 0.22)
+          : mat(at + sign * (T + 0.06), (ent1 + att1) / 2, pj, 0, 0, 0, 0.22, att1 - ent1, 0.34);
+        plaster.add(box(1, 1, 1), mh, [0, 0, 0, 0]);
+        const mk = axis === 'z'
+          ? mat(pj, att1 - 0.12, at + sign * (T + 0.10))
+          : mat(at + sign * (T + 0.10), att1 - 0.12, pj);
+        plaster.add(sph(0.10, 10, 8), mk, [0, 0, 0, 0]);    // herm head knob (faceless)
+      }
+      // main cornice: stacked, bracketed, gilt bead
+      moulding(plaster, axis === 'z' ? mid : at + sign * 0.30, att1, axis === 'z' ? at + sign * 0.30 : mid,
         len, axis === 'z' ? 'x' : 'z',
-        [[0.0, 0.18, 0.34], [0.20, 0.14, 0.52], [0.36, 0.16, 0.70], [0.52, 0.10, 0.86]], [0,0,0,0]);
-      const nd = Math.floor(len / 0.42);
-      for (let i = 0; i < nd; i++) {
-        const c = a0 + (i + 0.5) * (len / nd);
-        const m = axis === 'z' ? mat(c, cornY + 0.13, at + sign*0.47, 0, 0, 0, 0.16, 0.12, 0.10)
-                               : mat(at + sign*0.47, cornY + 0.13, c, 0, 0, 0, 0.10, 0.12, 0.16);
+        [[0.02, 0.14, 0.42], [0.14, 0.12, 0.58], [0.26, 0.12, 0.74]], [0, 0, 0, 0]);
+      const nb = Math.floor(len / 0.52);
+      for (let i = 0; i < nb; i++) {
+        const c = a0 + (i + 0.5) * (len / nb);
+        const m = axis === 'z' ? mat(c, att1 + 0.08, at + sign * 0.48, 0, 0, 0, 0.14, 0.16, 0.18)
+                               : mat(at + sign * 0.48, att1 + 0.08, c, 0, 0, 0, 0.18, 0.16, 0.14);
         plaster.add(box(1, 1, 1), m, [0, 0, 0, 0]);
       }
-      // gilt bead above the dentils
-      const m2 = axis === 'z' ? mat(mid, cornY + 0.30, at + sign*0.50, 0, 0, 0, len, 0.05, 0.05)
-                              : mat(at + sign*0.50, cornY + 0.30, mid, 0, 0, 0, 0.05, 0.05, len);
-      brass.add(box(1, 1, 1), m2, [rng()*9, 0, 0, 0]);
-    }
-    occlude(0, y1 + 0.4, 0, W + 2, 1.2, D + 2); // ceiling slab occluder
-    // coffers: beams grid with recessed panels and gilt rosettes
-    const nx = 4, nz = 6, bx = 0.34, cofD = 0.34;
-    const cellW = (W - 1.6) / nx, cellD = (D - 1.6) / nz;
-    plaster.add(box(W, 0.1, D), mat(0, y1 + 0.05, 0), [0,0,0,0]);   // slab above coffers
-    for (let i = 0; i <= nx; i++)
-      plaster.add(box(bx, cofD, D - 1.2), mat(x0 + 0.8 + i*cellW, y1 - cofD/2, 0), [0,0,0,0]);
-    for (let j = 0; j <= nz; j++)
-      plaster.add(box(W - 1.2, cofD, bx), mat(0, y1 - cofD/2, z0 + 0.8 + j*cellD), [0,0,0,0]);
-    for (let i = 0; i < nx; i++) for (let j = 0; j < nz; j++) {
-      const cx = x0 + 0.8 + (i + 0.5)*cellW, cz = z0 + 0.8 + (j + 0.5)*cellD;
-      plaster.add(box(cellW - bx, 0.06, cellD - bx), mat(cx, y1 - 0.03, cz), [0,0,0,0]);
-      brass.add(box(cellW - bx - 0.10, 0.03, 0.07), mat(cx, y1 - cofD + 0.015, cz - (cellD-bx)/2 + 0.05), [rng()*9,0,0,0]);
-      brass.add(cyl(0.10, 0.13, 0.10, 10), mat(cx, y1 - 0.10, cz), [rng()*9, 0, 0, 0]);  // rosette boss
+      const m2 = axis === 'z' ? mat(mid, att1 + 0.22, at + sign * 0.52, 0, 0, 0, len, 0.045, 0.045)
+                              : mat(at + sign * 0.52, att1 + 0.22, mid, 0, 0, 0, 0.045, 0.045, len);
+      brass.add(box(1, 1, 1), m2, [rng() * 9, 0, 0, 0]);
     }
 
-    // ── the bench wall: mahogany panelling, columns, lunette, seal ──────────
+    // ── window openings: deep reveals, arch shoulders, glass + mullions ─────
+    for (const wnd of WINDOWS) {
+      const topY = wnd.spring + wnd.r, gw = wnd.w, gh = topY - wnd.sill;
+      const rev = 0.42;
+      marble.add(box(rev, 0.14, gw + 0.36), mat(x0 + rev/2 + 0.12, wnd.sill - 0.07, wnd.z), [rng()*9, 0, 0, 0]);
+      marble.add(box(rev, gh + 0.30, 0.15), mat(x0 + rev/2 + 0.12, wnd.sill + gh/2, wnd.z - gw/2 - 0.075), [rng()*9, 0, 0, 0]);
+      marble.add(box(rev, gh + 0.30, 0.15), mat(x0 + rev/2 + 0.12, wnd.sill + gh/2, wnd.z + gw/2 + 0.075), [rng()*9, 0, 0, 0]);
+      marble.add(box(rev, 0.15, gw + 0.36), mat(x0 + rev/2 + 0.12, topY + 0.075, wnd.z), [rng()*9, 0, 0, 0]);
+      // arch shoulders + arch moulding reading the round head
+      marble.add(box(0.30, wnd.r * 0.9, 0.26), mat(x0 + 0.27, wnd.spring + wnd.r * 0.62, wnd.z - gw/2 + 0.10), [rng()*9, 0, 0, 0]);
+      marble.add(box(0.30, wnd.r * 0.9, 0.26), mat(x0 + 0.27, wnd.spring + wnd.r * 0.62, wnd.z + gw/2 - 0.10), [rng()*9, 0, 0, 0]);
+      marble.add(new THREE.TorusGeometry(gw/2, 0.07, 8, 22, Math.PI), mat(x0 + 0.38, wnd.spring, wnd.z, 0, Math.PI/2, 0), [rng()*9, 0, 0, 0]);
+      const gplane = new THREE.PlaneGeometry(gw, gh, 1, 1);
+      glass.add(gplane, mat(x0 + 0.10, wnd.sill + gh/2, wnd.z, 0, Math.PI/2, 0), [rng()*9, 0, 0, 0]);
+      for (let i = 0; i <= 2; i++)
+        brass.add(box(0.05, gh, 0.04), mat(x0 + 0.14, wnd.sill + gh/2, wnd.z - gw/2 + (gw/2)*i), [rng()*9, 0, 0, 0]);
+      brass.add(box(0.05, 0.05, gw), mat(x0 + 0.14, wnd.sill + gh*0.70, wnd.z), [rng()*9, 0, 0, 0]);
+      brass.add(box(0.05, 0.04, gw), mat(x0 + 0.14, wnd.sill + gh*0.35, wnd.z), [rng()*9, 0, 0, 0]);
+    }
+
+    // ── cove vault rising to the flat laylight field, with transverse ribs ──
     {
-      const bz = z0 + 0.24;
-      wood.add(box(9.4, 4.6, 0.18), mat(0, 2.5 + 0.55, bz + 0.09), [3, 0, 0, 0]);
-      // panel rhythm on it
-      for (let i = 0; i < 5; i++) {
-        const c = -3.5 + i * 1.75;
-        wood.add(box(1.35, 3.3, 0.07), mat(c, 3.05, bz + 0.20), [i * 1.7 + 1, 0, 0, 0]);
-        wood.add(box(1.05, 2.9, 0.035), mat(c, 3.05, bz + 0.235), [i * 2.3 + 5, 0, 0, 0]);
+      const inset = 0.35;
+      const gx0 = x0 + inset, gx1 = x1 - inset, gz0 = z0 + inset, gz1 = z1 - inset;
+      const geo = new THREE.PlaneGeometry(gx1 - gx0, gz1 - gz0, 72, 112);
+      geo.rotateX(Math.PI / 2);
+      const pa = geo.attributes.position;
+      const coveY = (x, z) => {
+        const t = Math.max(0, Math.min(1, Math.min(x - gx0, gx1 - x, z - gz0, gz1 - z) / coveW));
+        return cor1 + (flatY - cor1) * Math.sin(t * Math.PI / 2);
+      };
+      for (let i = 0; i < pa.count; i++) pa.setY(i, coveY(pa.getX(i), pa.getZ(i)));
+      geo.computeVertexNormals();
+      plaster.add(geo, mat(0, 0, 0), [0, 0, 0, 0]);
+      // transverse ornamented ribs at the bay joints
+      for (const zR of [-7.8, -2.6, 2.6, 7.8]) {
+        const steps = 30;
+        for (let s = 0; s < steps; s++) {
+          const x = gx0 + (s + 0.5) * (gx1 - gx0) / steps;
+          plaster.add(box((gx1 - gx0) / steps + 0.06, 0.15, 0.55),
+            mat(x, coveY(x, zR) - 0.075, zR), [0, 0, 0, 0]);
+        }
+        // sculpted plaster clusters at the rib springings (cupid-scale masses)
+        for (const sx of [gx0 + 0.55, gx1 - 0.55]) {
+          plaster.add(sph(0.24, 10, 8), mat(sx, cor1 + 0.30, zR, 0, 0, 0, 1, 0.78, 1), [0, 0, 0, 0]);
+          plaster.add(sph(0.15, 8, 7), mat(sx + (sx < 0 ? 0.30 : -0.30), cor1 + 0.16, zR + 0.20), [0, 0, 0, 0]);
+          plaster.add(sph(0.15, 8, 7), mat(sx + (sx < 0 ? 0.30 : -0.30), cor1 + 0.16, zR - 0.20), [0, 0, 0, 0]);
+        }
       }
-      occlude(0, 2.8, bz + 0.1, 9.4, 5.6, 0.4);
-      moulding(wood, 0, 5.3, bz + 0.22, 9.6, 'x', [[0, 0.14, 0.30], [0.13, 0.09, 0.42]], [7, 0, 0, 0]);
-      // lunette arch of gold mosaic above the bench
-      const lun = new THREE.CircleGeometry(2.55, 40, 0, Math.PI);
-      mosaic.add(lun, mat(0, 5.45, bz + 0.13), [0, 0, 74, 74]);
-      const lunRim = new THREE.TorusGeometry(2.55, 0.075, 8, 40, Math.PI);
-      brass.add(lunRim, mat(0, 5.45, bz + 0.16), [1, 0, 0, 0]);
-      // seal: brass disc, scales in relief, ring text
-      const seal = new THREE.CylinderGeometry(0.78, 0.78, 0.07, 40);
-      brass.add(seal, mat(0, 4.32, bz + 0.30, Math.PI/2, 0, 0), [0, 1, 0, 0]);
-      const sealRim = new THREE.TorusGeometry(0.78, 0.05, 8, 40);
-      brass.add(sealRim, mat(0, 4.32, bz + 0.31), [2, 0, 0, 0]);
-      occlude(0, 4.32, bz + 0.3, 1.6, 1.6, 0.2);
-      // flanking engaged columns: red Numidian shafts, gilt caps
-      for (const cx of [-4.15, 4.15]) {
-        marble.add(cyl(0.34, 0.38, 5.4, 18), mat(cx, 0.55 + 2.7, bz + 0.45), [1, 1, 0, 0]);
-        marble.add(box(0.95, 0.22, 0.95), mat(cx, 0.55 + 0.11, bz + 0.45), [1, 1, 0, 0]);
-        brass.add(cyl(0.46, 0.36, 0.42, 18), mat(cx, 0.55 + 5.4 + 0.21, bz + 0.45), [3, 0, 0, 0]);
-        brass.add(box(1.05, 0.14, 1.05), mat(cx, 0.55 + 5.4 + 0.48, bz + 0.45), [4, 0, 0, 0]);
-        marble.add(box(1.1, 0.55, 1.1), mat(cx, 0.275, bz + 0.45), [0, 0, 0, 0]);
-        occlude(cx, 3.3, bz + 0.45, 1.0, 6.6, 1.0);
-      }
-      // entablature over the columns
-      marble.add(box(9.8, 0.5, 0.7), mat(0, 6.62, bz + 0.42), [2, 0, 0, 0]);
-      occlude(0, 6.62, bz + 0.42, 9.8, 0.5, 0.9);
+      // bake occluders: top slab + crude cove wedges near the walls
+      occlude(0, flatY + 0.55, 0, W + 2, 1.0, D + 2);
+      occlude(x0 + 0.9, (cor1 + flatY) / 2 + 0.5, 0, 1.8, flatY - cor1, D);
+      occlude(x1 - 0.9, (cor1 + flatY) / 2 + 0.5, 0, 1.8, flatY - cor1, D);
+      occlude(0, (cor1 + flatY) / 2 + 0.5, z0 + 0.9, W, flatY - cor1, 1.8);
+      occlude(0, (cor1 + flatY) / 2 + 0.5, z1 - 0.9, W, flatY - cor1, 1.8);
     }
 
-    // ── sconces (right wall) + two brass chandeliers ────────────────────────
-    const lampGlass = new Merger();
-    for (const sz of [-7.5, -2.5, 2.5, 7.5]) {
-      brass.add(box(0.09, 0.5, 0.16), mat(x1 - 0.30, 3.7, sz), [rng()*9, 0, 0, 0]);
-      brass.add(cyl(0.030, 0.030, 0.34, 8), mat(x1 - 0.42, 3.85, sz, 0, 0, 0.5), [rng()*9, 0, 0, 0]);
-      lampGlass.add(sph(0.095, 10, 8), mat(x1 - 0.52, 4.02, sz), [rng()*9, 0, 0, 0]);
-    }
-    this.fixtures = [];
-    for (const cz of [-4.6, 2.4]) {
-      const hy = 5.6;
-      brass.add(cyl(0.02, 0.02, y1 - hy - 0.5, 6), mat(0, (y1 + hy)/2 + 0.2, cz), [rng()*9, 0, 0, 0]);
-      const ring = new THREE.TorusGeometry(0.85, 0.055, 10, 28);
-      brass.add(ring, mat(0, hy, cz, Math.PI/2, 0, 0), [rng()*9, 0, 0, 0]);
-      brass.add(cyl(0.16, 0.24, 0.30, 12), mat(0, hy + 0.02, cz), [rng()*9, 0, 0, 0]);
-      for (let i = 0; i < 8; i++) {
-        const a = (i / 8) * Math.PI * 2;
-        const gx = Math.cos(a) * 0.85, gz = cz + Math.sin(a) * 0.85;
-        brass.add(cyl(0.02, 0.035, 0.14, 6), mat(gx, hy + 0.10, gz), [rng()*9, 0, 0, 0]);
-        lampGlass.add(sph(0.105, 10, 8), mat(gx, hy - 0.06, gz), [rng()*9, 0, 0, 0]);
+    // ── the aedicule behind the bench: red breccia + diamond mosaic panel ───
+    {
+      const bz = z0 + 0.30;
+      marble.add(box(5.2, 4.0, 0.10), mat(0, 2.95, bz + 0.05), [3, 1, 0, 0]);
+      for (const s of [-1, 1]) {
+        marble.add(box(0.42, 4.3, 0.16), mat(s * 2.75, 3.0, bz + 0.10), [4, 0, 0, 0]);
+        marble.add(box(0.55, 3.6, 0.26), mat(s * 3.25, 2.85, bz + 0.15), [6, 1, 0, 0]);
+        brass.add(box(0.62, 0.16, 0.30), mat(s * 3.25, 4.75, bz + 0.16), [rng() * 9, 0, 0, 0]);
+        marble.add(box(0.66, 0.30, 0.32), mat(s * 3.25, 0.90, bz + 0.15), [7, 2, 0, 0]);
       }
-      this.fixtures.push([0, hy, cz]);
+      marble.add(box(5.9, 0.42, 0.16), mat(0, 5.10, bz + 0.10), [5, 0, 0, 0]);
+      marble.add(box(7.3, 0.55, 0.34), mat(0, 5.44, bz + 0.16), [8, 1, 0, 0]);
+      moulding(marble, 0, 5.66, bz + 0.20, 7.5, 'x', [[0.06, 0.10, 0.42]], [9, 0, 0, 0]);
+      occlude(0, 3.1, bz + 0.12, 7.4, 5.4, 0.5);
+      // the diamond-lozenge mosaic (geometric — deliberately non-identifying)
+      mosaic.add(box(3.9, 2.6, 0.06), mat(0, 3.22, bz + 0.14), [0, 2, 64, 44]);
+      brass.add(box(4.02, 0.05, 0.07), mat(0, 4.55, bz + 0.14), [1, 0, 0, 0]);
+      brass.add(box(4.02, 0.05, 0.07), mat(0, 1.89, bz + 0.14), [1, 0, 0, 0]);
+      brass.add(box(0.05, 2.71, 0.07), mat(-1.99, 3.22, bz + 0.14), [1, 0, 0, 0]);
+      brass.add(box(0.05, 2.71, 0.07), mat(1.99, 3.22, bz + 0.14), [1, 0, 0, 0]);
     }
-    for (const sz of [-7.5, -2.5, 2.5, 7.5]) this.fixtures.push([x1 - 0.52, 4.02, sz, 0.4]);
+
+    // ── attic centrepiece: allegorical mosaic lunette (generic art — this
+    //    replaces any seal or name; the room identifies no real court) ──────
+    {
+      const bz = z0 + 0.26;
+      const lun = new THREE.CircleGeometry(0.88, 44, 0, Math.PI);
+      mosaic.add(lun, mat(0, ent1 + 0.04, bz + 0.08), [0, 0, 90, 90]);
+      plaster.add(new THREE.TorusGeometry(0.88, 0.07, 8, 44, Math.PI), mat(0, ent1 + 0.04, bz + 0.10), [0, 0, 0, 0]);
+      brass.add(new THREE.TorusGeometry(0.81, 0.026, 6, 44, Math.PI), mat(0, ent1 + 0.04, bz + 0.12), [2, 0, 0, 0]);
+    }
+
+    // ── panelled mahogany doors (right wall + rear), marble entablatures ────
+    for (const [dz, dw] of [[-8.3, 1.5], [6.2, 1.5]]) {
+      wood.add(box(0.10, 3.0, dw), mat(x1 - 0.30, 1.5, dz), [70, 0, 0, 0]);
+      wood.add(box(0.06, 2.55, dw - 0.34), mat(x1 - 0.34, 1.42, dz), [71, 0, 0, 0]);
+      marble.add(box(0.20, 0.32, dw + 0.5), mat(x1 - 0.32, 3.22, dz), [rng() * 9, 0, 0, 0]);
+      brass.add(sph(0.035, 8, 6), mat(x1 - 0.40, 1.05, dz - dw / 2 + 0.18), [rng() * 9, 0, 0, 0]);
+    }
+    wood.add(box(2.0, 3.4, 0.12), mat(0, 1.7, z1 - 0.30), [72, 0, 0, 0]);
+
+    // ── laylights: glowing panels in hanging ornamented frames, ringed by
+    //    marquee bulb strings (the hero photo's light source) ────────────────
+    this.fixtures = [];            // warm-bulb bake sample points
+    this._laylightSamples = [];    // cool-daylight bake sample points
+    for (const L of LAYLIGHTS) {
+      const fw = L.w, fd = L.d;
+      for (const [cx, cz, sx, sz] of [
+        [0, L.z - fd/2 - 0.12, fw + 0.72, 0.28], [0, L.z + fd/2 + 0.12, fw + 0.72, 0.28],
+        [-fw/2 - 0.12, L.z, 0.28, fd + 0.24], [fw/2 + 0.12, L.z, 0.28, fd + 0.24],
+      ]) plaster.add(box(sx, 0.40, sz), mat(cx, flatY - 0.20, cz), [0, 0, 0, 0]);
+      // moulded lip + gilt beads on the frame
+      for (const szn of [-1, 1]) {
+        plaster.add(box(fw + 1.0, 0.10, 0.14), mat(0, flatY - 0.42, L.z + szn * (fd/2 + 0.28)), [0, 0, 0, 0]);
+        brass.add(box(fw + 0.9, 0.035, 0.035), mat(0, flatY - 0.40, L.z + szn * (fd/2 + 0.22)), [rng()*9, 0, 0, 0]);
+      }
+      // the glowing panel itself
+      lampGlass.add(box(fw, 0.05, fd), mat(0, flatY - 0.06, L.z), [0, 3, 0, 0]);
+      // marquee bulbs around the frame
+      const pitch = 0.36;
+      const nx2 = Math.round(fw / pitch), nz2 = Math.round(fd / pitch);
+      for (let i = 0; i <= nx2; i++) for (const szn of [-1, 1])
+        lampGlass.add(sph(0.048, 7, 6), mat(-fw/2 + i * fw / nx2, flatY - 0.40, L.z + szn * (fd/2 + 0.13)), [0, 0, 0, 0]);
+      for (let i = 1; i < nz2; i++) for (const sxn of [-1, 1])
+        lampGlass.add(sph(0.048, 7, 6), mat(sxn * (fw/2 + 0.13), flatY - 0.40, L.z - fd/2 + i * fd / nz2), [0, 0, 0, 0]);
+      // bake samples
+      this.fixtures.push([-fw/2, flatY - 0.45, L.z - fd/2, 0.9], [fw/2, flatY - 0.45, L.z - fd/2, 0.9],
+                         [-fw/2, flatY - 0.45, L.z + fd/2, 0.9], [fw/2, flatY - 0.45, L.z + fd/2, 0.9]);
+      this._laylightSamples.push([0, flatY - 0.12, L.z], [-fw/2 + 0.7, flatY - 0.12, L.z], [fw/2 - 0.7, flatY - 0.12, L.z]);
+    }
 
     // finalize static meshes
     const meshes = [
@@ -1230,45 +1299,52 @@ class PresenceScene {
       mesh.frustumCulled = false;
       this.staticEnv.add(mesh);
     }
-    this._roomMergers = { marble, wood, plaster, brass, mosaic };  // furniture appends below
   }
 
   _buildFurniture(MATS) {
     const rng = mulberry32(977);
     const wood = new Merger(), brass = new Merger(), leather = new Merger(),
           paper = new Merger(), marble = new Merger();
-    const { z0 } = ROOM;
+    const { x0, x1, z0, z1 } = ROOM;
+    const W = x1 - x0;
 
-    // ── dais: two marble steps + platform ───────────────────────────────────
-    const daisZ1 = -6.6;
-    marble.add(box(10.4, 0.55, (daisZ1 - z0)), mat(0, 0.275, (z0 + daisZ1)/2), [0, 0, 0, 0]);
-    occlude(0, 0.275, (z0 + daisZ1)/2, 10.4, 0.55, daisZ1 - z0);
-    marble.add(box(6.4, 0.18, 0.5), mat(0, 0.09, daisZ1 + 0.25), [0, 0, 0, 0]);
-    marble.add(box(6.4, 0.37, 0.5), mat(0, 0.185, daisZ1 - 0.25), [0, 0, 0, 0]);
-    occlude(0, 0.2, daisZ1, 6.4, 0.5, 1.2);
+    // ── grey-blue carpet: well + gallery, parted by the mosaic tile band ────
+    const daisZ1 = -6.5;
+    leather.add(box(W - 1.3, 0.022, 9.62), mat(0, 0.011, -1.66), [0, 1, 0, 0]);
+    leather.add(box(W - 1.3, 0.022, 6.70), mat(0, 0.011, 7.42), [2, 1, 0, 0]);
 
-    // ── THE BENCH — deliberately compressed: a 1-3 seat appellate bench.
-    //    A single centred jurist reads as intended; never a long empty row. ──
-    const benchW = 4.6, bz = -7.55, bTop = 2.32;
-    // main casework
-    wood.add(box(benchW, 1.77, 0.85), mat(0, 0.55 + 0.885, bz), [11, 0, 0, 0]);
-    occlude(0, 0.55 + 0.885, bz, benchW, 1.77, 0.85);
-    // wings angled toward counsel
-    for (const s of [-1, 1]) {
-      wood.add(box(1.5, 1.62, 0.72), mat(s * (benchW/2 + 0.62), 0.55 + 0.81, bz + 0.42, 0, -s * 0.5, 0), [12, 0, 0, 0]);
-      occlude(s * (benchW/2 + 0.62), 0.55 + 0.81, bz + 0.42, 1.6, 1.62, 0.9);
+    // ── dais: low marble platform, carpeted top, red curb step ──────────────
+    marble.add(box(10.8, 0.55, daisZ1 - z0), mat(0, 0.275, (z0 + daisZ1) / 2), [0, 0, 0, 0]);
+    occlude(0, 0.275, (z0 + daisZ1) / 2, 10.8, 0.55, daisZ1 - z0);
+    leather.add(box(10.6, 0.022, daisZ1 - z0 - 0.4), mat(0, 0.562, (z0 + daisZ1) / 2 - 0.15), [3, 1, 0, 0]);
+    marble.add(box(5.4, 0.18, 0.46), mat(0, 0.09, daisZ1 + 0.23), [1, 1, 0, 0]);
+    occlude(0, 0.09, daisZ1 + 0.23, 5.4, 0.18, 0.46);
+
+    // ── THE BENCH — the hero photo's long en-banc bench, reproduced at
+    //    width (compressed-bench rule suspended for this fidelity run).
+    //    One judge occupies the centre seat; the rest stay empty. ────────────
+    const benchW = 8.7, bz = -7.55, bTop = 2.32;
+    wood.add(box(benchW, 1.77, 0.90), mat(0, 0.55 + 0.885, bz), [11, 0, 0, 0]);
+    occlude(0, 0.55 + 0.885, bz, benchW, 1.77, 0.90);
+    wood.add(box(benchW + 0.35, 0.10, 1.10), mat(0, bTop + 0.05, bz), [13, 0, 0, 0]);
+    // parapet front: raised dark frames holding white marble inset panels
+    for (let i = 0; i < 10; i++) {
+      const c = -benchW / 2 + 0.62 + i * (benchW - 1.24) / 9;
+      wood.add(box(0.62, 0.50, 0.025), mat(c, 1.70, bz + 0.458), [12 + i, 0, 0, 0]);
+      marble.add(box(0.50, 0.38, 0.030), mat(c, 1.70, bz + 0.472), [i * 1.3, 0, 0.50, 0.38]);
     }
-    // top rail, nosing, base plinth, raised front panels
-    wood.add(box(benchW + 0.3, 0.09, 1.02), mat(0, bTop + 0.045, bz), [13, 0, 0, 0]);
-    moulding(wood, 0, bTop - 0.16, bz + 0.47, benchW, 'x', [[0, 0.07, 0.10], [-0.9, 0.05, 0.08]], [14, 0, 0, 0]);
-    wood.add(box(benchW, 0.16, 0.95), mat(0, 0.55 + 0.08, bz + 0.03), [15, 0, 0, 0]);
-    for (let i = 0; i < 3; i++) {
-      const c = -1.45 + i * 1.45;
-      wood.add(box(1.14, 1.05, 0.05), mat(c, 1.55, bz + 0.45), [16 + i, 0, 0, 0]);
-      wood.add(box(0.86, 0.78, 0.03), mat(c, 1.55, bz + 0.475), [19 + i, 0, 0, 0]);
+    moulding(wood, 0, 1.36, bz + 0.47, benchW, 'x', [[0, 0.07, 0.10]], [14, 0, 0, 0]);
+    moulding(wood, 0, 2.00, bz + 0.47, benchW, 'x', [[0, 0.07, 0.10]], [14, 0, 0, 0]);
+    wood.add(box(benchW, 0.16, 1.0), mat(0, 0.55 + 0.08, bz + 0.03), [15, 0, 0, 0]);
+    // modesty screen behind the seats
+    wood.add(box(benchW - 0.3, 0.30, 0.06), mat(0, bTop + 0.19, bz - 0.55), [22, 0, 0, 0]);
+    // nine high-back black leather chairs; the centre one taller (presiding)
+    for (let i = 0; i < 9; i++) {
+      const cx = -3.68 + i * 0.92;
+      const tall = i === 4 ? 0.28 : 0.0;
+      leather.add(box(0.56, 0.98 + tall, 0.11), mat(cx, bTop + 0.26 + tall / 2, bz - 0.85, -0.05), [i, 0, 0, 0]);
+      wood.add(box(0.60, 0.07, 0.13), mat(cx, bTop + 0.78 + tall, bz - 0.87, -0.05), [25 + i, 0, 0, 0]);
     }
-    // modesty top screen behind (judge emerges over it)
-    wood.add(box(benchW - 0.2, 0.30, 0.06), mat(0, bTop + 0.19, bz - 0.46), [22, 0, 0, 0]);
     // gavel + block + books + papers on the bench top
     wood.add(cyl(0.035, 0.035, 0.16, 8), mat(-0.55, bTop + 0.12, bz - 0.05, 0, 0, Math.PI/2), [23, 1, 0, 0]);
     wood.add(cyl(0.012, 0.012, 0.17, 6), mat(-0.48, bTop + 0.10, bz + 0.06, 0, 0.5, 0), [23, 1, 0, 0]);
@@ -1277,36 +1353,40 @@ class PresenceScene {
       leather.add(box(0.34, 0.055, 0.24), mat(0.72 + i*0.02, bTop + 0.07 + i*0.055, bz - 0.12, 0, rng()*0.3 - 0.15, 0), [rng()*9, 2, 0, 0]);
     for (let i = 0; i < 4; i++)
       paper.add(box(0.30, 0.004, 0.40), mat(-0.1 + rng()*0.5, bTop + 0.048 + i*0.004, bz + 0.1, 0, rng()*0.5 - 0.25, 0), [rng()*9, 0, 0, 0]);
-
-    // high-back judge's chair silhouette behind the bench (mostly hidden)
-    leather.add(box(0.62, 0.85, 0.14), mat(0, bTop + 0.32, bz - 0.78, -0.06), [1, 0, 0, 0]);
-    wood.add(box(0.70, 0.06, 0.16), mat(0, bTop + 0.76, bz - 0.80, -0.06), [25, 0, 0, 0]);
+    for (let i = 0; i < 2; i++)
+      paper.add(box(0.30, 0.004, 0.40), mat(-2.6 + rng()*0.4, bTop + 0.048 + i*0.004, bz + 0.05, 0, rng()*0.5 - 0.25, 0), [rng()*9, 0, 0, 0]);
 
     // ── bench lamp: brass banker's lamp (emissive shade lives in the rig) ───
     brass.add(cyl(0.055, 0.075, 0.03, 10), mat(1.25, bTop + 0.055, bz + 0.14), [1, 0, 0, 0]);
     brass.add(cyl(0.016, 0.016, 0.30, 8), mat(1.25, bTop + 0.20, bz + 0.14), [1, 0, 0, 0]);
 
-    // ── clerk's desk (right, below bench) ───────────────────────────────────
-    wood.add(box(1.9, 0.95, 0.7), mat(3.0, 0.475, -5.9, 0, -0.18, 0), [26, 0, 0, 0]);
-    occlude(3.0, 0.475, -5.9, 1.95, 0.95, 0.8);
-    paper.add(box(0.30, 0.006, 0.40), mat(3.0, 0.958, -5.9, 0, 0.2, 0), [3, 0, 0, 0]);
-    this._chair(wood, leather, rng, 3.15, -6.55, Math.PI + 0.18);
+    // ── clerk's desk centred below the bench (as the photo) ─────────────────
+    wood.add(box(2.3, 1.0, 0.72), mat(0, 0.5, -5.65), [26, 0, 0, 0]);
+    wood.add(box(2.5, 0.07, 0.88), mat(0, 1.03, -5.65), [27, 0, 0, 0]);
+    occlude(0, 0.5, -5.65, 2.5, 1.05, 0.9);
+    paper.add(box(0.30, 0.006, 0.40), mat(-0.3, 1.072, -5.65, 0, 0.2, 0), [3, 0, 0, 0]);
+    leather.add(box(0.35, 0.06, 0.25), mat(0.55, 1.10, -5.7, 0, -0.2, 0), [5, 2, 0, 0]);
+    this._chair(wood, leather, rng, 0.35, -6.25, 0.1);
 
-    // ── counsel tables + chairs + papers/books ──────────────────────────────
+    // ── counsel tables: carved dark wood, turned legs, black chairs ─────────
+    const legProf = [[0.02, 0], [0.075, 0.02], [0.05, 0.12], [0.085, 0.30], [0.045, 0.44],
+                     [0.07, 0.58], [0.035, 0.70], [0.055, 0.735]];
     for (const s of [-1, 1]) {
-      const tx = s * 2.55, tz = -2.0;
-      wood.add(box(2.5, 0.075, 1.15), mat(tx, 0.76, tz), [30 + s, 0, 0, 0]);
-      moulding(wood, tx, 0.70, tz + 0.575, 2.5, 'x', [[0, 0.05, 0.04]], [31, 0, 0, 0]);
-      for (const [dx, dz] of [[-1.15, -0.48], [1.15, -0.48], [-1.15, 0.48], [1.15, 0.48]])
-        wood.add(box(0.09, 0.72, 0.09), mat(tx + dx, 0.38, tz + dz), [32, 0, 0, 0]);
-      occlude(tx, 0.5, tz, 2.5, 0.85, 1.15);
-      leather.add(box(2.3, 0.012, 0.95), mat(tx, 0.803, tz), [2, 0, 0, 0]);   // desk inlay
+      const tx = s * 2.55, tz = -1.9;
+      wood.add(box(2.6, 0.09, 1.2), mat(tx, 0.78, tz), [30 + s, 0, 0, 0]);
+      moulding(wood, tx, 0.70, tz + 0.60, 2.6, 'x', [[0, 0.06, 0.05]], [31, 0, 0, 0]);
+      wood.add(box(2.2, 0.10, 0.9), mat(tx, 0.60, tz), [33, 0, 0, 0]);   // drawer apron
+      for (const [dx, dz] of [[-1.16, -0.50], [1.16, -0.50], [-1.16, 0.50], [1.16, 0.50]])
+        wood.add(lathe(legProf, 10), mat(tx + dx, 0.0, tz + dz), [32, 0, 0, 0]);
+      occlude(tx, 0.5, tz, 2.6, 0.9, 1.2);
+      leather.add(box(2.36, 0.014, 1.0), mat(tx, 0.832, tz), [2, 3, 0, 0]);   // oxblood inlay
       for (let i = 0; i < 3; i++)
-        paper.add(box(0.30, 0.005, 0.42), mat(tx - 0.6 + i*0.55 + rng()*0.1, 0.815 + i*0.003, tz + rng()*0.3 - 0.15, 0, rng()*0.6 - 0.3, 0), [rng()*9, 0, 0, 0]);
+        paper.add(box(0.30, 0.005, 0.42), mat(tx - 0.6 + i*0.55 + rng()*0.1, 0.842 + i*0.003, tz + rng()*0.3 - 0.15, 0, rng()*0.6 - 0.3, 0), [rng()*9, 0, 0, 0]);
       for (let i = 0; i < 2; i++)
-        leather.add(box(0.35, 0.06, 0.25), mat(tx + 0.75, 0.845 + i*0.062, tz - 0.3, 0, rng()*0.4 - 0.2, 0), [rng()*9, 2, 0, 0]);
-      this._chair(wood, leather, rng, tx - 0.55, tz + 1.05, Math.PI + (s>0 ? -0.1 : 0.1));
-      this._chair(wood, leather, rng, tx + 0.55, tz + 1.05, Math.PI + (s>0 ? -0.06 : 0.06));
+        leather.add(box(0.35, 0.06, 0.25), mat(tx + 0.75, 0.872 + i*0.062, tz - 0.3, 0, rng()*0.4 - 0.2, 0), [rng()*9, 2, 0, 0]);
+      this._chair(wood, leather, rng, tx - 0.72, tz + 1.10, Math.PI + (s > 0 ? -0.1 : 0.1));
+      this._chair(wood, leather, rng, tx, tz + 1.14, Math.PI);
+      this._chair(wood, leather, rng, tx + 0.72, tz + 1.10, Math.PI + (s > 0 ? -0.06 : 0.06));
     }
 
     // ── the lectern (the camera stands just behind it) ──────────────────────
@@ -1320,51 +1400,52 @@ class PresenceScene {
       paper.add(box(0.30, 0.005, 0.42), mat(-0.12, 1.235, lz - 0.08, 0.30, 0.06, 0), [5, 0, 0, 0]);
       paper.add(box(0.30, 0.005, 0.42), mat(0.14, 1.230, lz - 0.06, 0.30, -0.10, 0), [6, 0, 0, 0]);
       brass.add(box(0.5, 0.025, 0.025), mat(0, 1.06, lz - 0.36, 0.3), [2, 0, 0, 0]); // paper stop
-      // lectern pendant above (source of the pool light)
-      brass.add(cyl(0.015, 0.015, 2.9, 6), mat(0, 4.95, lz), [2, 0, 0, 0]);
+      // lectern pendant, hung from the vault (source of the pool light)
+      brass.add(cyl(0.015, 0.015, 4.9, 6), mat(0, 6.0, lz), [2, 0, 0, 0]);
       brass.add(cyl(0.14, 0.22, 0.20, 12), mat(0, 3.45, lz), [2, 0, 0, 0]);
     }
 
-    // ── bar rail with turned balusters + gates (behind the advocate) ────────
+    // ── the bar: brass rail on square balusters over marble piers (photo) ───
     {
-      const rz = 3.6, gap = 0.7;
-      const prof = [[0.012, 0], [0.05, 0.02], [0.024, 0.10], [0.045, 0.24], [0.020, 0.34],
-                    [0.048, 0.52], [0.016, 0.62], [0.038, 0.70], [0.012, 0.74]];
+      const rz = 3.62, gap = 0.62;
       for (const s of [-1, 1]) {
-        const a0 = s > 0 ? gap : ROOM.x0 + 0.35, a1 = s > 0 ? ROOM.x1 - 0.35 : -gap;
-        const len = a1 - a0;
-        wood.add(box(len, 0.07, 0.14), mat((a0+a1)/2, 0.86, rz), [50, 0, 0, 0]);
-        wood.add(box(len, 0.05, 0.09), mat((a0+a1)/2, 0.10, rz), [51, 0, 0, 0]);
-        const n = Math.max(2, Math.floor(len / 0.34));
+        const a0r = s > 0 ? gap : x0 + 0.5, a1r = s > 0 ? x1 - 0.5 : -gap;
+        const len = a1r - a0r, midr = (a0r + a1r) / 2;
+        brass.add(box(len, 0.075, 0.11), mat(midr, 0.80, rz), [50, 0, 0, 0]);
+        brass.add(box(len, 0.030, 0.05), mat(midr, 0.37, rz), [51, 0, 0, 0]);
+        const n = Math.max(2, Math.floor(len / 0.30));
         for (let i = 0; i <= n; i++)
-          wood.add(lathe(prof, 10), mat(a0 + (i/n)*len, 0.115, rz, 0, 0, 0, 1, 1.0, 1), [52, 1, 0, 0]);
-        occlude((a0+a1)/2, 0.45, rz, len, 0.9, 0.2);
+          brass.add(box(0.028, 0.42, 0.028), mat(a0r + (i / n) * len, 0.575, rz), [52, 0, 0, 0]);
+        occlude(midr, 0.42, rz, len, 0.85, 0.2);
+      }
+      for (const px of [-6.3, -3.6, -gap - 0.16, gap + 0.16, 3.6, 6.3]) {
+        marble.add(box(0.30, 0.82, 0.30), mat(px, 0.41, rz), [rng() * 9, 0, 0, 0]);
+        marble.add(box(0.36, 0.10, 0.36), mat(px, 0.05, rz), [1, 1, 0, 0]);
       }
       // swing gates, slightly ajar
       for (const s of [-1, 1]) {
-        wood.add(box(gap*0.92, 0.06, 0.10), mat(s*gap*0.52, 0.84, rz + s*0.12, 0, s*0.35, 0), [53, 0, 0, 0]);
+        brass.add(box(gap * 0.92, 0.055, 0.09), mat(s * gap * 0.52, 0.79, rz + s * 0.12, 0, s * 0.35, 0), [53, 0, 0, 0]);
         for (let i = 0; i < 3; i++)
-          wood.add(lathe(prof, 8), mat(s*(0.18 + i*0.24), 0.10, rz + s*0.11 + (s>0? -1:1)*i*0.008, 0, s*0.35, 0, 0.8, 0.95, 0.8), [54, 1, 0, 0]);
-        brass.add(box(0.03, 0.05, 0.12), mat(s*gap, 0.84, rz), [3, 0, 0, 0]);
+          brass.add(box(0.024, 0.40, 0.024), mat(s * (0.16 + i * 0.17), 0.56, rz + s * (0.06 + i * 0.05), 0, s * 0.35, 0), [54, 0, 0, 0]);
       }
     }
 
-    // ── gallery pews (behind the camera; they still shape the bake/bounce) ──
+    // ── gallery pews: warm mahogany with scroll-volute ends (photo) ─────────
     for (let r = 0; r < 3; r++) {
-      const pz = 5.3 + r * 1.5;
+      const pz = 5.2 + r * 1.55;
       for (const s of [-1, 1]) {
-        const px = s * 3.4;
-        wood.add(box(5.4, 0.06, 0.42), mat(px, 0.46, pz), [60 + r, 1, 0, 0]);
-        wood.add(box(5.4, 0.75, 0.07), mat(px, 0.62, pz + 0.26, -0.13), [61 + r, 1, 0, 0]);
-        for (const ex of [-2.6, 0, 2.6])
-          wood.add(box(0.08, 0.46, 0.40), mat(px + ex, 0.23, pz), [62, 1, 0, 0]);
-        occlude(px, 0.6, pz + 0.1, 5.4, 1.2, 0.6);
+        const px = s * 3.9;
+        wood.add(box(5.9, 0.06, 0.44), mat(px, 0.47, pz), [60 + r, 1, 0, 0]);
+        wood.add(box(5.9, 0.80, 0.08), mat(px, 0.66, pz + 0.28, -0.12), [61 + r, 1, 0, 0]);
+        wood.add(box(5.9, 0.05, 0.11), mat(px, 1.05, pz + 0.335, -0.12), [63 + r, 1, 0, 0]);
+        for (const ex of [-2.85, 0, 2.85]) {
+          wood.add(box(0.09, 0.50, 0.44), mat(px + ex, 0.25, pz), [62, 1, 0, 0]);
+          wood.add(box(0.09, 0.88, 0.52), mat(px + ex, 0.46, pz + 0.04), [62, 1, 0, 0]);
+          wood.add(cyl(0.09, 0.09, 0.09, 10), mat(px + ex, 0.92, pz - 0.14, 0, 0, Math.PI / 2), [64, 1, 0, 0]);
+        }
+        occlude(px, 0.6, pz + 0.1, 5.9, 1.2, 0.6);
       }
     }
-
-    // ── carpet runner up the centre aisle + well rug ────────────────────────
-    leather.add(box(2.1, 0.022, 8.6), mat(0, 0.012, 0.6), [0, 1, 0, 0]);
-    leather.add(box(5.6, 0.022, 2.6), mat(0, 0.012, -4.6), [1, 1, 0, 0]);
 
     const meshes = [
       [wood, MATS.wood], [brass, MATS.brass], [leather, MATS.leather],
@@ -1383,7 +1464,8 @@ class PresenceScene {
       mm.premultiply(new THREE.Matrix4().makeTranslation(dx, dy, dz));
       mm.premultiply(new THREE.Matrix4().makeRotationY(ry));
       mm.premultiply(new THREE.Matrix4().makeTranslation(x, 0, z));
-      (data[1] === 9 ? leather : wood).add(g, mm, data);
+      if (data[1] === 9) leather.add(g, mm, [data[0], 0, 0, 0]);   // black chair leather
+      else wood.add(g, mm, data);
     };
     for (const [lx, lz] of [[-0.21, -0.19], [0.21, -0.19], [-0.21, 0.19], [0.21, 0.19]])
       m(lx, 0.23, lz, box(0.05, 0.46, 0.05), [70, 0, 0, 0]);
@@ -1438,7 +1520,7 @@ class PresenceScene {
     this.rig.add(lampMesh);
 
     // lectern pool-light cone (soft additive volume, visible when lit)
-    const coneGeo = new THREE.CylinderGeometry(0.16, 0.85, 2.30, 20, 1, true);
+    const coneGeo = new THREE.CylinderGeometry(0.09, 0.42, 1.75, 20, 1, true);
     const coneMat = new THREE.ShaderMaterial({
       glslVersion: THREE.GLSL3,
       vertexShader: /* glsl */`
@@ -1451,14 +1533,15 @@ class PresenceScene {
         in vec2 vUvC; in vec3 vWpC; out vec4 outColor;
         void main(){
           float a = smoothstep(0.0, 0.35, vUvC.y) * smoothstep(1.0, 0.72, vUvC.y);
-          outColor = vec4(vec3(1.0, 0.82, 0.55) * uLectI * 0.28 * a, 1.0);
+          float nearF = smoothstep(0.8, 2.6, length(vWpC - uCamPos));
+          outColor = vec4(vec3(1.0, 0.82, 0.55) * uLectI * 0.085 * a * nearF, 1.0);
         }`,
       uniforms: { uLectI: this.G ? this.G.uLectI : { value: 0 }, uCamPos: { value: new THREE.Vector3() } },
       transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
     });
     this._coneMat = coneMat;
     const cone = new THREE.Mesh(coneGeo, coneMat);
-    cone.position.set(0, 2.25, 1.9);
+    cone.position.set(0, 2.15, 1.9);
     cone.frustumCulled = false;
     this.rig.add(cone);
   }
@@ -1471,54 +1554,35 @@ class PresenceScene {
     });
     const sm = new Merger();
     const rng = mulberry32(31337);
-    for (const wnd of WINDOWS) {
-      const pts = archPoints(wnd.w, wnd.sill + 0.15, wnd.spring, wnd.r * 0.92, 5);
-      const L = 10.5;                                     // beam length
-      const d = SUN_TO_SCENE;
-      const pos = [], uvA = [], dataA = [];
-      const n = pts.length;
-      for (let i = 0; i < n; i++) {
-        const a = pts[i], b = pts[(i + 1) % n];
-        const quad = [
-          [a, 0], [b, 0], [b, 1],
-          [a, 0], [b, 1], [a, 1],
-        ];
-        for (const [[py, pyy], t] of quad) {
-          const x = ROOM.x0 + 0.1 + d.x * L * t;
-          const y = pyy + d.y * L * t;
-          const z = wnd.z + py + d.z * L * t;
-          pos.push(x, y, z);
-          uvA.push((i / n + (t * 0)) % 1, t);
-          dataA.push(0, 0, 1, 0);
-        }
+    // each window gets two soft intersecting sheets extruded along the sun —
+    // reads as a volume from the podium without prism-face stacking
+    const L = 11.0, d = SUN_TO_SCENE;
+    const mkSheet = (cx, cy, cz, ex, ey, ez) => {
+      const pos = [], uvA = [], dataA = [], nrm = [];
+      const corners = [];
+      for (const [u, t] of [[0, 0], [1, 0], [1, 1], [0, 1]]) {
+        corners.push([cx + ex * (2*u - 1) + d.x * L * t,
+                      cy + ey * (2*u - 1) + d.y * L * t,
+                      cz + ez * (2*u - 1) + d.z * L * t, u, t]);
       }
-      // NOTE: cross-section u is faked per-edge; rim fade uses aData.z instead
+      for (const idx of [0, 1, 2, 0, 2, 3]) {
+        const c = corners[idx];
+        pos.push(c[0], c[1], c[2]); uvA.push(c[3], c[4]); dataA.push(0, 0, 1, 0); nrm.push(0, 1, 0);
+      }
       const g = new THREE.BufferGeometry();
       g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
       g.setAttribute('uv', new THREE.Float32BufferAttribute(uvA, 2));
-      g.setAttribute('normal', new THREE.Float32BufferAttribute(new Float32Array(pos.length), 3));
+      g.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
       g.setAttribute('aData', new THREE.Float32BufferAttribute(dataA, 4));
       sm.add(g, mat(0, 0, 0), [0, 0, 1, 0]);
+    };
+    for (const wnd of WINDOWS) {
+      const topY = wnd.spring + wnd.r;
+      const midY = (wnd.sill + topY) / 2;
+      mkSheet(ROOM.x0 + 0.15, midY, wnd.z, 0, 0, wnd.w * 0.5);
+      mkSheet(ROOM.x0 + 0.15, midY, wnd.z, 0, (topY - wnd.sill) * 0.42, 0);
     }
-    const shaftGeo = sm.build();
-    // rebuild uv.y as "along the beam" & aData.z as rim weight from cross-section
-    {
-      const p = shaftGeo.attributes.position, u = shaftGeo.attributes.uv, dt = shaftGeo.attributes.aData;
-      for (let i = 0; i < p.count; i++) {
-        const x = p.getX(i);
-        const t = (x - (ROOM.x0 + 0.1)) / (SUN_TO_SCENE.x * 10.5);
-        u.setY(i, t);
-        const y0 = p.getY(i) - SUN_TO_SCENE.y * 10.5 * t;
-        // rim weight: distance of the source-plane point from window centre line
-        let wZ = 0;
-        for (const wnd of WINDOWS) { if (Math.abs((p.getZ(i) - SUN_TO_SCENE.z*10.5*t) - wnd.z) < wnd.w) { wZ = 1 - Math.abs((p.getZ(i) - SUN_TO_SCENE.z*10.5*t) - wnd.z) / wnd.w; break; } }
-        const hMid = 1 - Math.abs((y0 - 3.4) / 2.6);
-        dt.setZ(i, Math.max(0, Math.min(1, wZ * 1.6)) * Math.max(0.2, hMid));
-        u.setX(i, wZ);
-      }
-      u.needsUpdate = dt.needsUpdate = true;
-    }
-    const shafts = new THREE.Mesh(shaftGeo, shaftMat);
+    const shafts = new THREE.Mesh(sm.build(), shaftMat);
     shafts.frustumCulled = false;
     shafts.renderOrder = 5;
     this.staticEnv.add(shafts);
@@ -1597,6 +1661,7 @@ class PresenceScene {
     const winSamples = [];
     for (const wnd of WINDOWS) for (let i = 0; i < 6; i++)
       winSamples.push([x0 + 0.02, wnd.sill + (i + 0.5)/6 * (wnd.spring + wnd.r - wnd.sill), wnd.z + (rng() - 0.5) * wnd.w * 0.8]);
+    for (const ls of this._laylightSamples) winSamples.push(ls);   // laylight daylight joins the A channel
     const fixtures = this.fixtures.map(f => [f[0], f[1], f[2], f[3] ?? 1.0]);
     // AO ray set: fixed low-discrepancy directions, up-biased sphere
     const aoDirs = [];
@@ -1753,6 +1818,7 @@ class PresenceScene {
     const t0 = performance.now();
     r.setRenderTarget(this.sceneRT);
     r.render(this.scene, this.camera);
+    this._sceneStats = { calls: r.info.render.calls, tris: r.info.render.triangles };
     // adaptive exposure: probe average luminance every 14 frames (live mode)
     if (!this._frozen && (this._frame % 14) === 0) {
       this.postQuad.material = this.lumMat;
@@ -1772,7 +1838,7 @@ class PresenceScene {
     this._frame++;
     const ft = performance.now() - t0;
     this._fpsAcc += ft; this._fpsN++;
-    if (this._fpsN >= 40) { this.fps = Math.round(1000 / (this._fpsAcc / this._fpsN)); this._fpsAcc = 0; this._fpsN = 0; }
+    if (this._fpsN >= 12) { this.fps = Math.round(1000 / (this._fpsAcc / this._fpsN)); this._fpsAcc = 0; this._fpsN = 0; }
   }
 }
 
@@ -1785,7 +1851,7 @@ class PresenceScene {
   window.presence = ps;
   window.__diag = () => ({
     state: ps.state, amp: ps.amp, bakeMs: ps.bakeMs, fps: ps.fps,
-    calls: ps.renderer?.info.render.calls, tris: ps.renderer?.info.render.triangles,
+    calls: ps._sceneStats?.calls, tris: ps._sceneStats?.tris,
     programs: ps.renderer?.info.programs?.length, exposure: +ps.exposure.toFixed(3),
   });
   await ps.init();
