@@ -299,19 +299,38 @@ void main(){
 }
 `;
 
-// skin vertex shader: adds the jaw-open morph channel.  aMorph carries the
-// per-vertex delta of a full jaw drop (baked at build time); uMouth blends it.
+// figure vertex shader: jaw-open morph (aMorph/aMorphN × uMouth) + hand-rolled
+// two-bone linear-blend skinning against a GLOBAL bone palette (uBones lives
+// in the shared G uniforms, so the depth prepass and every figure material
+// reference the same matrices).  Meshes without skin attributes read the
+// WebGL constant defaults (aWt = (0,0)) and take the else-branch, which is
+// kept textually identical to the classic transform so their depth stays
+// bit-identical across passes.  Bones are rotation+translation only, so
+// mat3(S) is an exact normal transform after normalize.
 const VERT_SKIN = /* glsl */`
 uniform float uMouth;
+uniform mat4 uBones[16];
 out vec3 vWp; out vec3 vN; out vec2 vUv; out vec4 vData;
 in vec4 aData;
 in vec3 aMorph;
+in vec3 aMorphN;
+in vec2 aBone;
+in vec2 aWt;
 void main(){
   vec3 p = position + aMorph * uMouth;
-  vWp = (modelMatrix * vec4(p,1.0)).xyz;
-  vN  = normalize(mat3(modelMatrix) * normal);
+  vec3 n = normal + aMorphN * uMouth;
   vUv = uv; vData = aData;
-  gl_Position = projectionMatrix * modelViewMatrix * vec4(p,1.0);
+  if (aWt.x + aWt.y > 0.5) {
+    mat4 S = uBones[int(aBone.x + 0.5)] * aWt.x + uBones[int(aBone.y + 0.5)] * aWt.y;
+    vec4 wp = S * vec4(p, 1.0);
+    vWp = wp.xyz;
+    vN  = normalize(mat3(S) * n);
+    gl_Position = projectionMatrix * viewMatrix * wp;
+  } else {
+    vWp = (modelMatrix * vec4(p,1.0)).xyz;
+    vN  = normalize(mat3(modelMatrix) * n);
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(p,1.0);
+  }
 }
 `;
 
@@ -660,6 +679,9 @@ void main(){
     // ── skin: generic warm medium tan, mottled, pored ──
     alb = mix(${C3(0xb48a70)}, ${C3(0x96705a)}, fbmS(vec2(az*2.2, el*2.6) + vData.x)*0.7);
     alb *= 0.97 + 0.05*vnoise3(vWp*160.0);                 // pores
+    // thin-skin translucency: nose bridge and ears flush warmer
+    float thin = gs(aaz, 0.0, 0.22)*gs(el, -0.30, 0.09)*float(vData.z > 0.5) + gs(aaz, 2.2, 0.30)*0.8;
+    alb = mix(alb, ${C3(0xa8604c)}, clamp(thin, 0.0, 1.0)*0.16);
     if (vData.z > 0.5 && aaz < 1.25) {                      // face zone (flag set on the skull only)
       float brow = gs(el, 0.240 + 0.05*cos(az*4.2), 0.030) * (gs(aaz, 0.33, 0.14) - gs(aaz, 0.0, 0.055)*0.7);
       alb = mix(alb, ${C3(0x40342a)}, clamp(brow, 0.0, 1.0)*0.62);
@@ -684,12 +706,18 @@ void main(){
       float nostril = (gs(az, 0.115, 0.035) + gs(az, -0.115, 0.035)) * gs(el, -0.295, 0.025);
       alb = mix(alb, ${C3(0x5e4136)}, clamp(nostril, 0.0, 1.0)*0.45);
       alb = mix(alb, ${C3(0xb07a68)}, (gs(aaz, 0.55, 0.20)*gs(el, -0.12, 0.14))*0.06); // cheek warmth
+      alb *= 1.0 - 0.16*gs(el, -0.62, 0.12)*gs(aaz, 0.0, 0.55);                        // under-jaw occlusion
     }
     rough = 0.45; specA = 0.10;
   } else {
     // ── hair: strand striations; per-figure tone via vData.x —
     //    0 = the judge's iron-grey w/ silver, ≥1 = counsel's dark brown ──
     float strand = vnoise(vec2(az*46.0, el*7.0));
+    // outer shells: strand-broken silhouette (mesh is depth-prepass-excluded)
+    if (vData.w > 0.5) {
+      float cut = vnoise(vec2(az*130.0, el*36.0));
+      if (cut < 0.26 + 0.20*vData.w) discard;
+    }
     float tone = smoothstep(0.5, 1.0, vData.x);
     alb = mix(${C3(0x413c38)}, ${C3(0x59534d)}, strand);
     alb = mix(alb, mix(${C3(0x241c15)}, ${C3(0x3c2f22)}, strand), tone);
@@ -712,6 +740,7 @@ void main(){
   }
   float fres = 0.04 + 0.96*pow(1.0 - max(dot(N, V), 0.0), 5.0);
   col += uWinCol * 1.75 * bk.a * specA * fres * lobe(N, winDir, V, rough) * 0.7;
+  col += uWinCol * 1.75 * bk.a * 0.05 * fres * lobe(N, winDir, V, 0.15);   // tight moist sheen
   col += uFixCol * 1.9 * bk.b * uHouse * specA * fres * lobe(N, normalize(vec3(0.2,1.0,0.1)), V, rough) * 0.5;
   col += dynLight(alb, N, vWp, V, specA, rough, uLampPos, vec3(1.0,0.58,0.24), uLampI*2.6);
   col += dynLight(alb, N, vWp, V, specA, rough, uLectPos, vec3(1.0,0.84,0.58), uLectI*2.0);
@@ -917,19 +946,44 @@ function occlude(cx, cy, cz, sx, sy, sz) {
 }
 
 class Merger {
-  constructor() { this.pos = []; this.nrm = []; this.uv = []; this.data = []; }
-  add(geom, matrix, data = [0, 0, 0, 0]) {
+  constructor() {
+    this.pos = []; this.nrm = []; this.uv = []; this.data = [];
+    this.bone = []; this.wt = []; this.morph = []; this.morphN = [];
+    this.hasSkin = false; this.hasMorph = false;
+  }
+  // data === null → preserve the geometry's own per-vertex aData.
+  // skin: (lx,ly,lz) => [boneI, boneJ, wJ] evaluated on the PRE-transform
+  // local vertex (cylinder/lathe local y is the natural joint coordinate).
+  // aMorph/aMorphN attributes on the source geometry are carried through,
+  // rotated by the matrix's linear part.
+  add(geom, matrix, data = [0, 0, 0, 0], skin = null) {
     const g = geom.index ? geom.toNonIndexed() : geom;
     const p = g.attributes.position, n = g.attributes.normal, u = g.attributes.uv;
+    const dAttr = data === null ? g.attributes.aData : null;
+    const mAttr = g.attributes.aMorph || null, mnAttr = g.attributes.aMorphN || null;
     const nm = new THREE.Matrix3().getNormalMatrix(matrix);
-    const v = new THREE.Vector3();
+    const lin = new THREE.Matrix3().setFromMatrix4(matrix);
+    if (skin) this.hasSkin = true;
+    if (mAttr || mnAttr) this.hasMorph = true;
+    const v = new THREE.Vector3(), lv = new THREE.Vector3();
     for (let i = 0; i < p.count; i++) {
-      v.fromBufferAttribute(p, i).applyMatrix4(matrix);
+      lv.fromBufferAttribute(p, i);
+      v.copy(lv).applyMatrix4(matrix);
       this.pos.push(v.x, v.y, v.z);
       v.fromBufferAttribute(n, i).applyMatrix3(nm).normalize();
       this.nrm.push(v.x, v.y, v.z);
       if (u) this.uv.push(u.getX(i), u.getY(i)); else this.uv.push(0, 0);
-      this.data.push(data[0], data[1], data[2], data[3]);
+      if (dAttr) this.data.push(dAttr.getX(i), dAttr.getY(i), dAttr.getZ(i), dAttr.getW(i));
+      else this.data.push(data[0], data[1], data[2], data[3]);
+      if (skin) {
+        const [bi, bj, wj] = skin(lv.x, lv.y, lv.z);
+        const w1 = Math.min(1, Math.max(0, wj));
+        this.bone.push(bi, bj); this.wt.push(1 - w1, w1);
+      } else { this.bone.push(0, 0); this.wt.push(0, 0); }
+      if (mAttr) { v.fromBufferAttribute(mAttr, i).applyMatrix3(lin); this.morph.push(v.x, v.y, v.z); }
+      else this.morph.push(0, 0, 0);
+      if (mnAttr) { v.fromBufferAttribute(mnAttr, i).applyMatrix3(nm); this.morphN.push(v.x, v.y, v.z); }
+      else this.morphN.push(0, 0, 0);
     }
     if (g !== geom) g.dispose();
   }
@@ -939,6 +993,14 @@ class Merger {
     g.setAttribute('normal', new THREE.Float32BufferAttribute(this.nrm, 3));
     g.setAttribute('uv', new THREE.Float32BufferAttribute(this.uv, 2));
     g.setAttribute('aData', new THREE.Float32BufferAttribute(this.data, 4));
+    if (this.hasSkin) {
+      g.setAttribute('aBone', new THREE.Float32BufferAttribute(this.bone, 2));
+      g.setAttribute('aWt', new THREE.Float32BufferAttribute(this.wt, 2));
+    }
+    if (this.hasMorph) {
+      g.setAttribute('aMorph', new THREE.Float32BufferAttribute(this.morph, 3));
+      g.setAttribute('aMorphN', new THREE.Float32BufferAttribute(this.morphN, 3));
+    }
     return g;
   }
 }
@@ -1108,6 +1170,7 @@ class PresenceScene {
       uLectPos:{ value: this._lectPos },
       uLectI:  { value: 0 },
       uMouth:  { value: 0 },
+      uBones:  { value: Array.from({ length: 16 }, () => new THREE.Matrix4()) },
       uCamPos: { value: camera.position },
     };
 
@@ -1128,7 +1191,7 @@ class PresenceScene {
       leather: mkMat(FRAG_LEATHER),
       plaster: mkMat(FRAG_PLASTER),
       paper:   mkMat(FRAG_PAPER),
-      robe:    mkMat(FRAG_ROBE),
+      robe:    mkMat(FRAG_ROBE, {}, { vert: VERT_SKIN }),
       skin:    mkMat(FRAG_SKIN, {}, { vert: VERT_SKIN }),
       glass:   mkMat(FRAG_GLASS),
       lamp:    mkMat(FRAG_LAMPGLASS),
@@ -1150,12 +1213,13 @@ class PresenceScene {
       glslVersion: THREE.GLSL3,
       vertexShader: VERT_SKIN,
       fragmentShader: 'precision highp float; out vec4 o; void main(){ o = vec4(0.0); }',
-      uniforms: { uMouth: G.uMouth },
+      uniforms: { uMouth: G.uMouth, uBones: G.uBones },   // BOTH, or prepass depth diverges
     });
     this._depthMat.colorWrite = false;
     this._transparents = [];
     scene.traverse(o => {
-      if ((o.isMesh || o.isPoints) && (o.isPoints || (o.material && o.material.transparent)))
+      if ((o.isMesh || o.isPoints) &&
+          (o.isPoints || o.userData.noPrepass || (o.material && o.material.transparent)))
         this._transparents.push(o);
     });
 
@@ -1658,7 +1722,7 @@ class PresenceScene {
   //    likeness, no textures.  Head-local (azimuth, elevation) goes to the
   //    uv channel so FRAG_SKIN can shade brows/lids/lips procedurally. ──────
   _buildJudgeHead(opts = {}) {
-    const res = opts.res ?? 48, hairRes = opts.hairRes ?? 40;
+    const res = opts.res ?? 60, hairRes = opts.hairRes ?? 40;
     const hairBase = opts.hairBase ?? 0.63, seed = opts.seed ?? 0;
     const sst = (a, b, x) => { const t = THREE.MathUtils.clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
     const G = (x, c, s) => Math.exp(-((x - c) * (x - c)) / (2 * s * s));
@@ -1687,11 +1751,14 @@ class PresenceScene {
         r += 0.038 * G(aaz, 0.00, 0.15) * G(el, 0.185, 0.080);                 // glabella
         r -= 0.070 * G(aaz, 0.30, 0.150) * G(el, 0.030, 0.078);                // orbits
         r += 0.026 * G(aaz, 0.29, 0.100) * G(el, -0.010, 0.040);               // closed lids
+        r -= 0.009 * G(aaz, 0.29, 0.095) * G(el, 0.058, 0.016);                // upper-lid crease
         const nwin = sst(-0.36, -0.27, el) * (1 - sst(0.10, 0.20, el));
         const tt = THREE.MathUtils.clamp((0.10 - el) / 0.40, 0, 1);
         r += G(az, 0, 0.080) * (0.020 + 0.095 * tt * tt) * nwin;               // nose bridge/ridge
         r += 0.055 * G(az, 0, 0.090) * G(el, -0.300, 0.048);                   // nose tip
         r += 0.020 * G(aaz, 0.125, 0.046) * G(el, -0.298, 0.036);              // alae
+        r -= 0.013 * G(aaz, 0.105, 0.028) * G(el, -0.318, 0.018);              // nostril hollows
+        r -= 0.006 * G(az, 0, 0.026) * G(el, -0.352, 0.028);                   // philtrum groove
         r += 0.012 * G(az, 0, 0.095) * G(el, -0.385, 0.028);                   // upper lip
         r += 0.015 * G(az, 0, 0.085) * G(el, -0.455, 0.034);                   // lower lip
         r -= 0.009 * G(az, 0, 0.095) * G(el, -0.418, 0.010);                   // faintly-set lip seam
@@ -1753,8 +1820,10 @@ class PresenceScene {
     // hinge near the ears (aMorph = delta at full opening; uMouth blends it)
     const g = m.build();
     const morph = new Float32Array(g.attributes.position.count * 3);
+    const morphN = new Float32Array(g.attributes.position.count * 3);
     if (opts.morph !== false) {
       const pos = g.attributes.position, uvA = g.attributes.uv, dat = g.attributes.aData;
+      const nrm = g.attributes.normal;
       const hy = 0.104, hz = 0.010;                          // hinge (local space)
       const ca = Math.cos(0.10), sa = Math.sin(0.10);
       for (let i = 0; i < pos.count; i++) {
@@ -1765,10 +1834,56 @@ class PresenceScene {
         const y = pos.getY(i) - hy, z = pos.getZ(i) - hz;
         morph[i * 3 + 1] = (y * ca - z * sa - y) * w;
         morph[i * 3 + 2] = (y * sa + z * ca - z) * w;
+        const ny = nrm.getY(i), nz = nrm.getZ(i);            // rotate normals with the jaw
+        morphN[i * 3 + 1] = (ny * ca - nz * sa - ny) * w;
+        morphN[i * 3 + 2] = (ny * sa + nz * ca - nz) * w;
       }
     }
     g.setAttribute('aMorph', new THREE.Float32BufferAttribute(morph, 3));
+    g.setAttribute('aMorphN', new THREE.Float32BufferAttribute(morphN, 3));
     return g;
+  }
+
+  // volumetric hair: two offset shells over the cap, strand-broken by
+  // discard in FRAG_SKIN (vData.w flags the shell).  Kept as a SEPARATE
+  // mesh excluded from the depth prepass — a prepassed discard would leave
+  // z-blocking holes where the colour pass cuts strands out.
+  _buildHairShells(opts = {}) {
+    const sst = (a, b, x) => { const t = THREE.MathUtils.clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+    const h2 = (x, y) => { const s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453; return s - Math.floor(s); };
+    const vn2 = (x, y) => {
+      const xi = Math.floor(x), yi = Math.floor(y), xf = x - xi, yf = y - yi;
+      const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
+      return (h2(xi, yi) * (1 - u) + h2(xi + 1, yi) * u) * (1 - v) + (h2(xi, yi + 1) * (1 - u) + h2(xi + 1, yi + 1) * u) * v;
+    };
+    const R = opts.R ?? 0.122, hairBase = opts.hairBase ?? 0.63, seed = opts.seed ?? 0;
+    const slot = opts.slot ?? 2;
+    const m = new Merger();
+    const headMat = (opts.bind || new THREE.Matrix4()).clone()
+      .multiply(mat(0, 0.115, 0.025, 0, 0, 0, 0.86 * R, 1.14 * R, 1.04 * R));
+    for (const [base, flag] of [[1.088, 1], [1.120, 2]]) {
+      const shell = new THREE.SphereGeometry(1, 30, 20, 0, Math.PI * 2, 0, 2.25);
+      const p = shell.attributes.position, u = shell.attributes.uv;
+      const v3 = new THREE.Vector3();
+      for (let i = 0; i < p.count; i++) {
+        v3.fromBufferAttribute(p, i).normalize();
+        const az = Math.atan2(v3.x, v3.z), el = Math.asin(THREE.MathUtils.clamp(v3.y, -1, 1));
+        const aaz = Math.abs(az);
+        let r = base + 0.020 * vn2(az * 2.5 + 7, el * 3 + 3);
+        const hairline = (aaz < 1.0 ? hairBase + 0.16 * sst(0.35, 0.85, aaz) : hairBase + 0.16 - (aaz - 1.0) * 0.75)
+                       + 0.035 * (vn2(az * 6.0 + seed * 9.0, 3.0) - 0.5);
+        const faceMask = aaz < 1.45 ? sst(hairline + 0.03, hairline - 0.05, el) : 0;
+        const earNotch = sst(1.25, 1.45, aaz) * (1 - sst(1.75, 1.95, aaz));
+        const napeFloor = -0.50 + 0.52 * earNotch;
+        const lowMask = sst(napeFloor + 0.05, napeFloor - 0.04, el);
+        r = r + (0.94 - r) * Math.max(faceMask, lowMask);
+        p.setXYZ(i, v3.x * r, v3.y * r, v3.z * r);
+        u.setXY(i, az, el);
+      }
+      shell.computeVertexNormals();
+      m.add(shell, headMat, [seed, 1, 0, flag], () => [slot, slot, 0]);
+    }
+    return m.build();
   }
 
   // resting hand with actual fingers (palm, four two-segment fingers in a
@@ -1777,11 +1892,13 @@ class PresenceScene {
     const hm = new Merger();
     const fill = (g) => { const u = g.attributes.uv; for (let i = 0; i < u.count; i++) u.setXY(i, 2.5, 0); return g; };
     hm.add(fill(sph(1, 10, 8)), mat(0, 0, 0.01, 0, 0, 0, 0.036, 0.015, 0.050), [0, 0, 0, 0]);
+    const fLen = [0.90, 1.0, 0.96, 0.82];                    // index…pinky variation
     for (let f = 0; f < 4; f++) {
       const fx = (f - 1.5) * 0.0165;
       const curl = 1.52 + f * 0.03;
-      hm.add(fill(cyl(0.0078, 0.0090, 0.040, 6)), mat(fx, -0.007, 0.054, curl, 0, 0), [0, 0, 0, 0]);
-      hm.add(fill(cyl(0.0064, 0.0078, 0.034, 6)), mat(fx, -0.021, 0.084, 2.05, 0, 0), [0, 0, 0, 0]);
+      hm.add(fill(sph(0.0092, 8, 6)), mat(fx, 0.002, 0.047, 0, 0, 0, 1, 0.8, 1.1), [0, 0, 0, 0]);   // knuckle
+      hm.add(fill(cyl(0.0078, 0.0090, 0.040 * fLen[f], 6)), mat(fx, -0.007, 0.054, curl, 0, 0), [0, 0, 0, 0]);
+      hm.add(fill(cyl(0.0064, 0.0078, 0.034 * fLen[f], 6)), mat(fx, -0.021, 0.050 + 0.034 * fLen[f], 2.05, 0, 0), [0, 0, 0, 0]);
     }
     // thumb sits INBOARD (thumbs face each other) and splays via rz (ry spins
     // a cylinder about its own axis — a no-op the review caught)
@@ -1794,32 +1911,114 @@ class PresenceScene {
   _buildRig(MATS) {
     const bz = -7.55, seatY = 2.32;
     const jz = bz - 0.68;      // judge's spine line, just in front of the chair
-    // ── THE JUDGE — an articulated, sculpted, GENERIC figure.  Bone
-    //    hierarchy: hip (seat pivot) → chest → { neck/head pivot,
-    //    shoulders → elbows → hands }.  Geometry is built in each bone's
-    //    local space; all animation is keyframed on the injected clock. ─────
+    const sst = (a, b, x) => { const t = THREE.MathUtils.clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+    // ── THE JUDGE — articulated, sculpted, GENERIC, now with hand-rolled
+    //    linear-blend skinning.  Bones are plain Groups (hip → chest →
+    //    { head pivot, shoulders → elbows → hands }) driven by the same
+    //    clock-pure keyframe channels; geometry is baked once in the rest
+    //    (bind) pose into TWO merged meshes — cloth and skin — weighted
+    //    per-vertex against the global bone palette (G.uBones).  Slots:
+    //    0 hip · 1 chest · 2 head · 3/4/5 L sh/el/hand · 6/7/8 R · 9/10
+    //    counsel pivots. ────────────────────────────────────────────────────
+    const REST = { chest0: 0.52, sh0: -0.55, el0: -0.60, hand0: 0.95 };
     this.judge = new THREE.Group();
     const hip = this._judgePivot = new THREE.Group();
     hip.position.set(0, seatY, jz);
-    // robed torso (hip space): drape from the seat, chest swell, shoulder
-    // shelf, neck stub — one static mesh under the moving bones
-    const torso = new Merger();
+    const chest = new THREE.Group();
+    chest.position.set(0, REST.chest0, 0.01);
+    hip.add(chest);
+    const headPivot = new THREE.Group();
+    headPivot.position.set(0, 0.20, -0.01);
+    chest.add(headPivot);
+    const mkArmBones = (s) => {
+      const sh = new THREE.Group();
+      sh.position.set(s * 0.180, 0.045, 0.02);
+      sh.rotation.set(REST.sh0, 0, s * 0.06);
+      const el = new THREE.Group();
+      el.position.set(0, -0.34, 0);
+      el.rotation.x = REST.el0;
+      const hand = new THREE.Group();
+      hand.position.set(0, -0.305, 0.005);
+      hand.rotation.x = REST.hand0;
+      el.add(hand); sh.add(el); chest.add(sh);
+      return { sh, el, hand };
+    };
+    const armL = mkArmBones(-1), armR = mkArmBones(1);
+    this._jb = { chest, head: headPivot, shL: armL.sh, shR: armR.sh, elL: armL.el, elR: armR.el,
+      handL: armL.hand, handR: armR.hand, ...REST };
+    this.judge.add(hip);
+    this.judge.position.y = -1.05;
+    this.rig.add(this.judge);
+
+    // analytic bind matrices (rest pose, presence = 0) — never captured from
+    // matrixWorld, which is contaminated by the animated initial state
+    const T = (x, y, z) => new THREE.Matrix4().makeTranslation(x, y, z);
+    const RE = (rx, ry, rz) => new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(rx, ry, rz));
+    const bind = [];
+    bind[0] = T(0, seatY, jz);
+    bind[1] = bind[0].clone().multiply(T(0, REST.chest0, 0.01));
+    bind[2] = bind[1].clone().multiply(T(0, 0.20, -0.01));
+    for (const [s, o] of [[-1, 3], [1, 6]]) {
+      bind[o]     = bind[1].clone().multiply(T(s * 0.180, 0.045, 0.02)).multiply(RE(REST.sh0, 0, s * 0.06));
+      bind[o + 1] = bind[o].clone().multiply(T(0, -0.34, 0)).multiply(RE(REST.el0, 0, 0));
+      bind[o + 2] = bind[o + 1].clone().multiply(T(0, -0.305, 0.005)).multiply(RE(REST.hand0, 0, 0));
+    }
+
+    // ── cloth mesh: robe + sleeves + cuffs (counsel suits appended below) ──
+    const cloth = new Merger();
     const torsoProfile = [
       [0.001, 0.00], [0.40, 0.02], [0.43, 0.16], [0.39, 0.42], [0.345, 0.66],
       [0.315, 0.82], [0.32, 0.92], [0.175, 1.00], [0.125, 1.05], [0.001, 1.08],
     ];
-    torso.add(lathe(torsoProfile, 24), mat(0, -0.36, 0, 0.06, 0, 0, 0.92, 1.0, 0.74), [0, 0, 0, 0]);
-    torso.add(sph(0.115, 12, 10), mat(-0.165, 0.55, 0, 0, 0, 0.30, 1.0, 0.72, 1.0), [0, 0, 0, 0]);
-    torso.add(sph(0.115, 12, 10), mat(0.165, 0.55, 0, 0, 0, -0.30, 1.0, 0.72, 1.0), [0, 0, 0, 0]);
-    torso.add(cyl(0.050, 0.064, 0.16, 12), mat(0, 0.685, -0.015), [0, 0, 0, 0]);   // neck
-    const torsoMesh = new THREE.Mesh(torso.build(), MATS.robe);
-    torsoMesh.frustumCulled = false;
-    hip.add(torsoMesh);
-    // chest bone: carries collar, head pivot and both arms (breath rides here)
-    const chest = new THREE.Group();
-    chest.position.set(0, 0.52, 0.01);
-    hip.add(chest);
-    // white judicial collar band + two-tier jabot — the key "judge" accent
+    // geometric drape: radial vertical folds on a finer lathe, displaced
+    // BEFORE weighting so folds never perturb the blend bands
+    const torsoGeo = lathe(torsoProfile, 48);
+    {
+      const p = torsoGeo.attributes.position;
+      const v = new THREE.Vector3();
+      for (let i = 0; i < p.count; i++) {
+        v.fromBufferAttribute(p, i);
+        const r = Math.hypot(v.x, v.z);
+        if (r > 0.02) {
+          const th = Math.atan2(v.x, v.z);
+          const skirt = sst(0.95, 0.45, v.y);
+          const f = 1 + (Math.sin(th * 9.0 + v.y * 2.0) * 0.035 + Math.sin(th * 23.0) * 0.012) * skirt;
+          p.setX(i, v.x * f); p.setZ(i, v.z * f);
+        }
+      }
+      torsoGeo.computeVertexNormals();
+    }
+    cloth.add(torsoGeo, bind[0].clone().multiply(mat(0, -0.36, 0, 0.06, 0, 0, 0.92, 1.0, 0.74)),
+      [0, 0, 0, 0], (lx, ly) => [0, 1, sst(0.60, 1.00, ly)]);
+    for (const [s, o] of [[-1, 3], [1, 6]]) {
+      cloth.add(sph(0.115, 12, 10), bind[0].clone().multiply(mat(s * 0.165, 0.55, 0, 0, 0, -s * 0.30, 1.0, 0.72, 1.0)),
+        [0, 0, 0, 0], () => [1, o, 0.25]);   // robe shoulder follows the arm a little
+      cloth.add(cyl(0.058, 0.072, 0.34, 10), bind[o].clone().multiply(mat(0, -0.17, 0, 0, 0, 0, 1, 1, 0.9)),
+        [0, 0, 0, 0], (lx, ly) => {
+          const t = 0.17 - ly;
+          return t < 0.10 ? [1, o, 0.5 + 0.5 * sst(0.0, 0.10, t)] : [o, o + 1, sst(0.24, 0.40, t)];
+        });
+      cloth.add(cyl(0.064, 0.058, 0.30, 10), bind[o + 1].clone().multiply(mat(0, -0.13, 0)),
+        [0, 0, 0, 0], (lx, ly) => [o, o + 1, 0.5 + 0.5 * sst(-0.02, 0.10, 0.13 - ly)]);
+      cloth.add(cyl(0.050, 0.046, 0.05, 10), bind[o + 1].clone().multiply(mat(0, -0.27, 0)),
+        [0, 2, 0, 0], (lx, ly) => [o + 1, o + 2, sst(0.22, 0.30, 0.27 - ly)]);   // cuff shears with the hand
+    }
+    cloth.add(cyl(0.050, 0.064, 0.16, 12), bind[0].clone().multiply(mat(0, 0.685, -0.015)),
+      [0, 0, 0, 0], () => [0, 1, 1]);   // dark under-collar neck, rigid to chest
+
+    // ── skin mesh: sculpted head (jaw morph rides the head bone) + hands ───
+    const skinM = new Merger();
+    skinM.add(this._buildJudgeHead(), bind[2].clone(), null, () => [2, 2, 0]);
+    skinM.add(this._buildHand(-1), bind[5].clone(), [0, 0, 0, 0], () => [5, 5, 0]);
+    skinM.add(this._buildHand(1), bind[8].clone(), [0, 0, 0, 0], () => [8, 8, 0]);
+    // volumetric hair shells: separate mesh, skinned to the head, EXCLUDED
+    // from the depth prepass (its colour pass discards strand gaps)
+    const shellMesh = new THREE.Mesh(this._buildHairShells({ bind: bind[2], slot: 2 }), MATS.skin);
+    shellMesh.frustumCulled = false;
+    shellMesh.userData.noPrepass = true;
+    this.rig.add(shellMesh);
+
+    // white judicial collar band + two-tier jabot — rigid child of the chest
     const collar = new Merger();
     collar.add(cyl(0.072, 0.082, 0.05, 12), mat(0, 0.175, -0.02), [0, 1, 0, 0]);
     collar.add(box(0.090, 0.100, 0.022), mat(0, 0.130, 0.205, 0.20, 0, 0), [0, 1, 0, 0]);
@@ -1827,96 +2026,50 @@ class PresenceScene {
     const collarMesh = new THREE.Mesh(collar.build(), MATS.paper);
     collarMesh.frustumCulled = false;
     chest.add(collarMesh);
-    // head on its neck pivot (bow/tilt/turn are animated, never baked)
-    const headPivot = new THREE.Group();
-    headPivot.position.set(0, 0.20, -0.01);
-    const headMesh = new THREE.Mesh(this._buildJudgeHead(), MATS.skin);
-    headMesh.frustumCulled = false;
-    headPivot.add(headMesh);
-    chest.add(headPivot);
-    // arms: shoulder → sleeve, elbow → forearm sleeve, wrist → fingered hand
-    const mkArm = (s) => {
-      const sh = new THREE.Group();
-      sh.position.set(s * 0.180, 0.045, 0.02);
-      const sleeve = new Merger();
-      sleeve.add(cyl(0.058, 0.072, 0.34, 10), mat(0, -0.17, 0, 0, 0, 0, 1, 1, 0.9), [0, 0, 0, 0]);
-      const sleeveMesh = new THREE.Mesh(sleeve.build(), MATS.robe);
-      sleeveMesh.frustumCulled = false;
-      sh.add(sleeveMesh);
-      const el = new THREE.Group();
-      el.position.set(0, -0.34, 0);
-      const fore = new Merger();
-      fore.add(cyl(0.064, 0.058, 0.30, 10), mat(0, -0.13, 0), [0, 0, 0, 0]);   // sinks into the sleeve mouth
-      fore.add(cyl(0.050, 0.046, 0.05, 10), mat(0, -0.27, 0), [0, 2, 0, 0]);   // pale cuff sliver
-      const foreMesh = new THREE.Mesh(fore.build(), MATS.robe);
-      foreMesh.frustumCulled = false;
-      el.add(foreMesh);
-      const hand = new THREE.Mesh(this._buildHand(s), MATS.skin);
-      hand.frustumCulled = false;
-      hand.position.set(0, -0.305, 0.005);
-      el.add(hand);
-      sh.add(el);
-      chest.add(sh);
-      return { sh, el, hand };
-    };
-    const armL = mkArm(-1), armR = mkArm(1);
-    // bone table + rest pose: bent elbows (interior ≈145°), hands landing on
-    // the bench-top plane with a whisker of clearance for the lean channels
-    this._jb = {
-      chest, head: headPivot, shL: armL.sh, shR: armR.sh, elL: armL.el, elR: armR.el,
-      handL: armL.hand, handR: armR.hand,
-      chest0: 0.52, sh0: -0.55, el0: -0.60, hand0: 0.95,
-    };
-    armL.sh.rotation.set(this._jb.sh0, 0, -0.06);
-    armR.sh.rotation.set(this._jb.sh0, 0, 0.06);
-    armL.el.rotation.x = armR.el.rotation.x = this._jb.el0;
-    armL.hand.rotation.x = armR.hand.rotation.x = this._jb.hand0;
-    this.judge.add(hip);
-    this.judge.position.y = -1.05;
-    this.rig.add(this.judge);
 
     // ── OPPOSING COUNSEL — two seated dark-suited figures at the counsel
-    //    tables, backs to the advocate POV (inherently faceless).  Presence
-    //    follows the session (absent when the room is IDLE/ADJOURNED). ──────
+    //    tables, backs to the advocate POV (inherently faceless).  Rigidly
+    //    skinned to their seat pivots (palette slots 9/10) and merged into
+    //    the SAME cloth/skin meshes; the pivots remain the animated bones.
+    //    Presence follows the session (absent in IDLE/ADJOURNED). ───────────
     this._counselGroup = new THREE.Group();
     this._counsel = [];
-    for (const s of [-1, 1]) {
-      const cx = s * 2.55, cz = -0.84;    // on the middle chair, facing the bench
-      const suit = new Merger();
-      const suitProfile = [
-        [0.001, 0.00], [0.295, 0.02], [0.315, 0.18], [0.285, 0.40],
-        [0.255, 0.56], [0.235, 0.64], [0.13, 0.72], [0.001, 0.75],
-      ];
-      suit.add(lathe(suitProfile, 18), mat(cx, 0.53, cz, -0.05, 0, 0, 1.0, 1.0, 0.78), [0, 1, 0, 0]);
-      suit.add(sph(0.105, 10, 9), mat(cx - 0.215, 1.17, cz, 0, 0, 0.25, 1.2, 0.7, 1.0), [0, 1, 0, 0]);
-      suit.add(sph(0.105, 10, 9), mat(cx + 0.215, 1.17, cz, 0, 0, -0.25, 1.2, 0.7, 1.0), [0, 1, 0, 0]);
-      // arms forward to the table edge (hands hidden behind the torso)
-      suit.add(cyl(0.055, 0.075, 0.42, 8), mat(cx - 0.235, 0.99, cz - 0.20, -0.95, 0, -0.12), [0, 1, 0, 0]);
-      suit.add(cyl(0.055, 0.075, 0.42, 8), mat(cx + 0.235, 0.99, cz - 0.20, -0.95, 0, 0.12), [0, 1, 0, 0]);
-      // white shirt collar sliver at the nape, visible above the suit collar
-      suit.add(box(0.068, 0.022, 0.012), mat(cx, 1.318, cz + 0.062, 0.10, 0, 0), [0, 2, 0, 0]);
+    const counselBind = [];
+    for (const [k, s] of [[0, -1], [1, 1]]) {
+      const cx = s * 2.55, cz = -0.84, slot = 9 + k;
       const pivot = new THREE.Group();
       pivot.position.set(cx, 0.53, cz);
-      const geo = new THREE.Group();
-      geo.position.set(-cx, -0.53, -cz);
-      const suitMesh = new THREE.Mesh(suit.build(), MATS.robe);   // variant 1 → suit cloth
-      suitMesh.frustumCulled = false;
-      geo.add(suitMesh);
-      // sculpted skin head with dark hair (low-res reuse of the judge head),
-      // facing the bench — the camera only ever sees hair, nape and ears
-      const chead = new THREE.Mesh(this._buildJudgeHead({
-        res: 26, hairRes: 22, R: 0.112, hairBase: 0.30, seed: s > 0 ? 1.4 : 2.2, morph: false,
-      }), MATS.skin);
-      chead.frustumCulled = false;
-      chead.position.set(cx, 1.30, cz);
-      chead.rotation.set(-0.20, Math.PI, 0);       // bowed to the table, face away
-      geo.add(chead);
-      pivot.add(geo);
       this._counsel.push(pivot);
       this._counselGroup.add(pivot);
+      counselBind[k] = T(cx, 0.53, cz);
+      const rigid = () => [slot, slot, 0];
+      const suitProfile = [
+        [0.001, 0.00], [0.27, 0.02], [0.29, 0.18], [0.265, 0.40],
+        [0.24, 0.56], [0.225, 0.64], [0.125, 0.72], [0.001, 0.75],
+      ];
+      cloth.add(lathe(suitProfile, 18), mat(cx, 0.53, cz, -0.05, 0, 0, 1.0, 1.0, 0.78), [0, 1, 0, 0], rigid);
+      cloth.add(sph(0.105, 10, 9), mat(cx - 0.205, 1.17, cz, 0, 0, 0.25, 1.15, 0.7, 1.0), [0, 1, 0, 0], rigid);
+      cloth.add(sph(0.105, 10, 9), mat(cx + 0.205, 1.17, cz, 0, 0, -0.25, 1.15, 0.7, 1.0), [0, 1, 0, 0], rigid);
+      cloth.add(cyl(0.055, 0.075, 0.42, 8), mat(cx - 0.235, 0.99, cz - 0.20, -0.95, 0, -0.12), [0, 1, 0, 0], rigid);
+      cloth.add(cyl(0.055, 0.075, 0.42, 8), mat(cx + 0.235, 0.99, cz - 0.20, -0.95, 0, 0.12), [0, 1, 0, 0], rigid);
+      cloth.add(box(0.068, 0.022, 0.012), mat(cx, 1.318, cz + 0.062, 0.10, 0, 0), [0, 2, 0, 0], rigid);
+      skinM.add(this._buildJudgeHead({
+        res: 26, hairRes: 22, R: 0.112, hairBase: 0.30, seed: s > 0 ? 1.4 : 2.2, morph: false,
+      }), mat(cx, 1.30, cz, -0.20, Math.PI, 0), null, rigid);
     }
     this._counselGroup.position.y = -1.40;
     this.rig.add(this._counselGroup);
+
+    // finalize the two skinned meshes (world-space bind; parent = rig identity)
+    const clothMesh = new THREE.Mesh(cloth.build(), MATS.robe);
+    const skinMesh = new THREE.Mesh(skinM.build(), MATS.skin);
+    clothMesh.frustumCulled = skinMesh.frustumCulled = false;
+    this.rig.add(clothMesh, skinMesh);
+    // bone palette bookkeeping for the per-frame fill in _update
+    this._boneRefs = [hip, chest, headPivot, armL.sh, armL.el, armL.hand,
+                      armR.sh, armR.el, armR.hand, this._counsel[0], this._counsel[1]];
+    this._invBind = bind.map(m => m.clone().invert())
+      .concat([counselBind[0].clone().invert(), counselBind[1].clone().invert()]);
     // NOTE — gallery figures deliberately SKIPPED: from the fixed podium POV
     // the rear pews are behind the camera (never visible), and the reference
     // photographs show the room empty; a phantom audience would only spend
@@ -2287,6 +2440,15 @@ class PresenceScene {
       }
     }
     if (this._coneMat) this._coneMat.uniforms.uLectI.value = this.cur.lect;
+    // fill the global bone palette (world × inverse-bind).  updateMatrixWorld
+    // runs HERE, after all bone mutations, so the depth and colour passes —
+    // and the very first ?pose= frame — see identical, current matrices.
+    if (this._boneRefs) {
+      this.rig.updateMatrixWorld(true);
+      const pal = this.G.uBones.value;
+      for (let i = 0; i < this._boneRefs.length; i++)
+        pal[i].multiplyMatrices(this._boneRefs[i].matrixWorld, this._invBind[i]);
+    }
   }
   _render(now) {
     const r = this.renderer;
